@@ -8,8 +8,14 @@ interface RawProject {
   path: string
 }
 
-export async function readFile(path: string): Promise<string> {
-  return invoke<string>("read_file", { path })
+export async function readFile(
+  path: string,
+  options?: { extractImages?: boolean },
+): Promise<string> {
+  return invoke<string>("read_file", {
+    path,
+    extractImages: options?.extractImages,
+  })
 }
 
 export async function writeFile(path: string, contents: string): Promise<void> {
