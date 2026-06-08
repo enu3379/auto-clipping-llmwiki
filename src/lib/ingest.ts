@@ -139,6 +139,19 @@ function stripWikiMediaAbsPaths(projectPath: string, content: string): string {
   return content.split(`${projectPath}/wiki/media/`).join("media/")
 }
 
+function encodeMarkdownPathSegment(segment: string): string {
+  return encodeURIComponent(segment).replace(/[!'()*]/g, (char) =>
+    `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  )
+}
+
+export function hasMineruImageRefs(content: string, sourceSummarySlug: string): boolean {
+  return (
+    content.includes(`media/${sourceSummarySlug}/mineru/`) ||
+    content.includes(`media/${encodeMarkdownPathSegment(sourceSummarySlug)}/mineru/`)
+  )
+}
+
 interface SourceChunk {
   id: string
   index: number
@@ -482,8 +495,8 @@ async function autoIngestImpl(
   const lowerExt = fileName.includes(".") ? fileName.split(".").pop()?.toLowerCase() : ""
   const isPdf = lowerExt === "pdf"
   const mineruCfg = useWikiStore.getState().mineruConfig
+  let mineruSucceeded = false
   if (isPdf && mineruCfg.enabled && mineruCfg.token) {
-    let mineruSucceeded = false
     try {
       const cacheDir = sp.substring(0, sp.lastIndexOf("/"))
       const cachePath = `${cacheDir}/.cache/${fileName}.txt`
@@ -491,7 +504,10 @@ async function autoIngestImpl(
       console.log(`[ingest:mineru] submitting "${fileName}" to MinerU API`)
       const markdown = await parseWithMineru(mineruCfg, sp, undefined, (msg) => {
         activity.updateItem(activityId, { detail: `MinerU: ${msg}` })
-      }, signal)
+      }, signal, {
+        projectPath: pp,
+        sourceSummarySlug,
+      })
       await createDirectory(`${cacheDir}/.cache`)
       await writeFile(cachePath, markdown)
       mineruSucceeded = true
@@ -532,7 +548,10 @@ async function autoIngestImpl(
   if (cachedFiles !== null) {
     try {
       console.log(`[ingest:diag] cache-hit branch: starting image extraction for ${sp}`)
-      let savedImages = await extractAndSaveSourceImages(pp, sp, sourceSummarySlug)
+      const skipNativePdfImageExtraction = isPdf && hasMineruImageRefs(sourceContent, sourceSummarySlug)
+      let savedImages = skipNativePdfImageExtraction
+        ? []
+        : await extractAndSaveSourceImages(pp, sp, sourceSummarySlug)
       const markdownImages = await extractAndSaveMarkdownImages(pp, sp, sourceContent, sourceSummarySlug)
       savedImages = [...savedImages, ...markdownImages]
       console.log(`[ingest:diag] cache-hit branch: got ${savedImages.length} image(s)`)
@@ -625,7 +644,12 @@ async function autoIngestImpl(
   // and returns [] on any error.
   activity.updateItem(activityId, { detail: "Extracting embedded images..." })
   console.log(`[ingest:diag] full-pipeline branch: starting image extraction for ${sp}`)
-  let savedImages = await extractAndSaveSourceImages(pp, sp, sourceSummarySlug)
+  const skipNativePdfImageExtraction = isPdf && (
+    hasMineruImageRefs(sourceContent, sourceSummarySlug)
+  )
+  let savedImages = skipNativePdfImageExtraction
+    ? []
+    : await extractAndSaveSourceImages(pp, sp, sourceSummarySlug)
   const markdownImages = await extractAndSaveMarkdownImages(pp, sp, sourceContent, sourceSummarySlug)
   savedImages = [...savedImages, ...markdownImages]
   console.log(`[ingest:diag] full-pipeline branch: got ${savedImages.length} image(s)`)
