@@ -304,6 +304,187 @@ describe("fetchEmbedding — provider wire formats", () => {
     expect(headers["X-Empty"]).toBeUndefined()
   })
 
+  it("does not auto-append /embeddings for generic OpenAI-compatible custom endpoints", async () => {
+    mockHttpFetch.mockResolvedValueOnce(okResponse([0.5, 0.6]))
+
+    const out = await fetchEmbedding("hi", {
+      enabled: true,
+      endpoint: "https://gateway.example.com/v1",
+      apiKey: "sk-test",
+      model: "text-embedding-3-small",
+    })
+
+    expect(out).toEqual([0.5, 0.6])
+    const [url, opts] = mockHttpFetch.mock.calls[0]
+    expect(url).toBe("https://gateway.example.com/v1")
+    expect(JSON.parse(String(opts?.body))).toEqual({
+      model: "text-embedding-3-small",
+      input: "hi",
+    })
+  })
+
+  it("auto-appends /embeddings for Volcengine OpenAI-compatible base endpoints only", async () => {
+    mockHttpFetch.mockResolvedValueOnce(okResponse([0.1, 0.2]))
+
+    const out = await fetchEmbedding("hi", {
+      enabled: true,
+      endpoint: "https://ark.cn-beijing.volces.com/api/v3",
+      apiKey: "ark-key",
+      model: "doubao-embedding-text-240715",
+    })
+
+    expect(out).toEqual([0.1, 0.2])
+    const [url, opts] = mockHttpFetch.mock.calls[0]
+    expect(url).toBe("https://ark.cn-beijing.volces.com/api/v3/embeddings")
+    expect((opts?.headers as Record<string, string>).Authorization).toBe("Bearer ark-key")
+    expect(JSON.parse(String(opts?.body))).toEqual({
+      model: "doubao-embedding-text-240715",
+      input: "hi",
+    })
+  })
+
+  it("does not infer Volcengine from a custom endpoint path or query string", async () => {
+    mockHttpFetch.mockResolvedValueOnce(okResponse([0.2, 0.3]))
+
+    await fetchEmbedding("hi", {
+      enabled: true,
+      endpoint: "https://gateway.example.com/proxy/volcengine?upstream=volces.com",
+      apiKey: "sk-test",
+      model: "text-embedding-3-small",
+    })
+
+    expect(mockHttpFetch.mock.calls[0][0]).toBe(
+      "https://gateway.example.com/proxy/volcengine?upstream=volces.com",
+    )
+  })
+
+  it("uses Volcengine Doubao multimodal embedding request and response shape", async () => {
+    mockHttpFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: { embedding: [0.7, 0.8] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    )
+
+    const out = await fetchEmbedding("hello", {
+      enabled: true,
+      endpoint: "https://ark.cn-beijing.volces.com/api/v3",
+      apiKey: "ark-key",
+      model: "doubao-embedding-vision",
+    })
+
+    expect(out).toEqual([0.7, 0.8])
+    const [url, opts] = mockHttpFetch.mock.calls[0]
+    expect(url).toBe("https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal")
+    expect((opts?.headers as Record<string, string>).Authorization).toBe("Bearer ark-key")
+    expect(JSON.parse(String(opts?.body))).toEqual({
+      model: "doubao-embedding-vision",
+      encoding_format: "float",
+      input: [{ type: "text", text: "hello" }],
+    })
+  })
+
+  it("uses Doubao multimodal wire shape for proxied vision models without rewriting custom endpoints", async () => {
+    mockHttpFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: { embedding: [0.4, 0.5] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    )
+
+    const out = await fetchEmbedding("hello", {
+      enabled: true,
+      endpoint: "https://gateway.example.com/ark/embeddings/multimodal",
+      apiKey: "proxy-key",
+      model: "doubao-embedding-vision",
+    })
+
+    expect(out).toEqual([0.4, 0.5])
+    const [url, opts] = mockHttpFetch.mock.calls[0]
+    expect(url).toBe("https://gateway.example.com/ark/embeddings/multimodal")
+    expect(JSON.parse(String(opts?.body))).toEqual({
+      model: "doubao-embedding-vision",
+      encoding_format: "float",
+      input: [{ type: "text", text: "hello" }],
+    })
+  })
+
+  it("preserves query parameters when building Volcengine embedding endpoints", async () => {
+    mockHttpFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: { embedding: [0.9] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    )
+
+    await fetchEmbedding("hello", {
+      enabled: true,
+      endpoint: "https://ark.cn-beijing.volces.com/api/v3/embeddings?trace=1",
+      apiKey: "ark-key",
+      model: "doubao-embedding-vision",
+    })
+
+    expect(mockHttpFetch.mock.calls[0][0]).toBe(
+      "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal?trace=1",
+    )
+  })
+
+  it("does not duplicate existing Volcengine embedding suffixes", async () => {
+    mockHttpFetch
+      .mockResolvedValueOnce(okResponse([0.1]))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { embedding: [0.2] } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(okResponse([0.3]))
+
+    await fetchEmbedding("hello", {
+      enabled: true,
+      endpoint: "https://ark.cn-beijing.volces.com/api/v3/embeddings",
+      apiKey: "ark-key",
+      model: "doubao-embedding-text-240715",
+    })
+    await fetchEmbedding("hello", {
+      enabled: true,
+      endpoint: "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal",
+      apiKey: "ark-key",
+      model: "doubao-embedding-vision",
+    })
+    await fetchEmbedding("hello", {
+      enabled: true,
+      endpoint: "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal",
+      apiKey: "ark-key",
+      model: "doubao-embedding-text-240715",
+    })
+
+    expect(mockHttpFetch.mock.calls.map((call) => call[0])).toEqual([
+      "https://ark.cn-beijing.volces.com/api/v3/embeddings",
+      "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal",
+      "https://ark.cn-beijing.volces.com/api/v3/embeddings",
+    ])
+  })
+
+  it("reports the Doubao multimodal response shape when the vector is missing", async () => {
+    mockHttpFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: [{ embedding: [0.1] }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    )
+
+    const out = await fetchEmbedding("hello", {
+      enabled: true,
+      endpoint: "https://ark.cn-beijing.volces.com/api/coding/v3",
+      apiKey: "ark-key",
+      model: "doubao-embedding-vision",
+    })
+
+    expect(out).toBeNull()
+    expect(getLastEmbeddingError()).toContain("missing data.embedding")
+  })
+
   it("does not let custom headers override the Gemini API key header", async () => {
     mockHttpFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({ embedding: { values: [0.7, 0.8] } }), {

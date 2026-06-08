@@ -22,19 +22,32 @@ static RESOLVED_SHELL_PATH: OnceLock<Option<String>> = OnceLock::new();
 /// (cached, so the shell is spawned at most once). Returns `None` when there is
 /// nothing to add, in which case the child should inherit PATH unchanged.
 #[cfg(not(windows))]
-pub(crate) fn child_path_env() -> Option<String> {
-    let shell_path = RESOLVED_SHELL_PATH
-        .get_or_init(|| login_shell_path(LOGIN_SHELL_PATH_TIMEOUT))
-        .clone()?;
-    match std::env::var("PATH") {
-        Ok(current) if !current.is_empty() => Some(format!("{shell_path}:{current}")),
-        _ => Some(shell_path),
-    }
+pub(crate) async fn child_path_env() -> Option<String> {
+    let shell_path = tokio::task::spawn_blocking(|| {
+        RESOLVED_SHELL_PATH
+            .get_or_init(|| login_shell_path(LOGIN_SHELL_PATH_TIMEOUT))
+            .clone()
+    })
+    .await
+    .ok()
+    .flatten()?;
+    Some(merge_child_path_env(
+        &shell_path,
+        std::env::var("PATH").ok().as_deref(),
+    ))
 }
 
 #[cfg(windows)]
-pub(crate) fn child_path_env() -> Option<String> {
+pub(crate) async fn child_path_env() -> Option<String> {
     None
+}
+
+#[cfg(not(windows))]
+fn merge_child_path_env(shell_path: &str, inherited_path: Option<&str>) -> String {
+    match inherited_path {
+        Some(current) if !current.is_empty() => format!("{shell_path}:{current}"),
+        _ => shell_path.to_string(),
+    }
 }
 
 pub(crate) async fn find_cli_command(
@@ -180,7 +193,7 @@ fn parse_shell_path_output(stdout: &str) -> Option<String> {
 
 #[cfg(all(test, not(windows)))]
 mod tests {
-    use super::parse_shell_path_output;
+    use super::{merge_child_path_env, parse_shell_path_output};
 
     #[test]
     fn parse_shell_path_output_ignores_banners() {
@@ -196,5 +209,25 @@ mod tests {
         assert_eq!(parse_shell_path_output("PATH=/usr/bin"), None);
         assert_eq!(parse_shell_path_output("\x1ePATH=\x1e"), None);
         assert_eq!(parse_shell_path_output("\x1eOTHER=/usr/bin\x1e"), None);
+    }
+
+    #[test]
+    fn merge_child_path_env_prepends_shell_path_when_inherited_path_exists() {
+        assert_eq!(
+            merge_child_path_env("/opt/homebrew/bin:/usr/local/bin", Some("/usr/bin:/bin")),
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+        );
+    }
+
+    #[test]
+    fn merge_child_path_env_uses_shell_path_when_inherited_path_is_empty() {
+        assert_eq!(
+            merge_child_path_env("/opt/homebrew/bin", Some("")),
+            "/opt/homebrew/bin"
+        );
+        assert_eq!(
+            merge_child_path_env("/opt/homebrew/bin", None),
+            "/opt/homebrew/bin"
+        );
     }
 }

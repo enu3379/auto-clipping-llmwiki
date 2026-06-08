@@ -47,6 +47,11 @@ function parseLines(chunk: Uint8Array, buffer: string): [string[], string] {
   return [lines, remaining]
 }
 
+function isRequestCancelledError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return /^request cancel(?:l)?ed$/i.test(message.trim())
+}
+
 export async function streamChat(
   config: LlmConfig,
   messages: import("./llm-providers").ChatMessage[],
@@ -119,7 +124,7 @@ export async function streamChat(
       onDone()
       return
     }
-    if (err instanceof Error && err.name === "AbortError") {
+    if ((err instanceof Error && err.name === "AbortError") || isRequestCancelledError(err)) {
       // Backstop timeout aborted the request (we tracked this via
       // timeoutFired); treat it as a real timeout rather than a cancel.
       if (timeoutFired) {
@@ -265,7 +270,7 @@ export async function streamChat(
       signal?.aborted ||
       timeoutFired ||
       (err instanceof Error && err.name === "AbortError") ||
-      (err instanceof Error ? err.message : String(err)) === "Request cancelled"
+      isRequestCancelledError(err)
     if (isAbort) {
       // Mirror the pre-fetch catch: distinguish our long-horizon backstop
       // (an actionable timeout) from a user-initiated cancel (silent).

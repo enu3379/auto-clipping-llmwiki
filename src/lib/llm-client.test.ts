@@ -166,4 +166,48 @@ describe("streamChat — mid-stream abort mapping", () => {
     expect(onDone).toHaveBeenCalledTimes(1)
     expect(onError).not.toHaveBeenCalled()
   })
+
+  it("recognises lowercase and single-l cancelled spellings as silent cancels", async () => {
+    for (const message of ["request cancelled", "Request canceled"]) {
+      const { response, getReject, readCalled } = pendingStreamResponse()
+      mockHttpFetch.mockResolvedValueOnce(response)
+
+      const onError = vi.fn()
+      const onDone = vi.fn()
+      const promise = streamChat(
+        cfg,
+        [{ role: "user", content: "hi" }],
+        { onToken: vi.fn(), onDone, onError },
+        undefined,
+        {},
+      )
+
+      await readCalled
+      getReject()(message)
+      await promise
+
+      expect(onDone).toHaveBeenCalledTimes(1)
+      expect(onError).not.toHaveBeenCalled()
+    }
+  })
+
+  it("treats pre-fetch bare-string cancel spellings as silent cancels", async () => {
+    for (const message of ["request cancelled", "Request canceled"]) {
+      mockHttpFetch.mockReset()
+      mockHttpFetch.mockRejectedValueOnce(message)
+
+      const onError = vi.fn()
+      const onDone = vi.fn()
+      await streamChat(
+        cfg,
+        [{ role: "user", content: "hi" }],
+        { onToken: vi.fn(), onDone, onError },
+        undefined,
+        {},
+      )
+
+      expect(onDone).toHaveBeenCalledTimes(1)
+      expect(onError).not.toHaveBeenCalled()
+    }
+  })
 })

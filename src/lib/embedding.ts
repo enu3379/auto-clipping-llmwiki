@@ -105,7 +105,10 @@ export async function fetchEmbedding(
   if (!cfg.endpoint) return null
 
   const isGoogleNative = isGoogleEmbeddingConfig(cfg)
-  const endpoint = isGoogleNative ? googleEmbeddingEndpoint(cfg) : cfg.endpoint
+  const isDoubaoMultimodal = isDoubaoMultimodalEmbeddingConfig(cfg)
+  const endpoint = isGoogleNative
+    ? googleEmbeddingEndpoint(cfg)
+    : volcengineEmbeddingEndpoint(cfg)
   const headers: Record<string, string> = { "Content-Type": "application/json" }
   if (cfg.apiKey) {
     if (isGoogleNative) {
@@ -135,7 +138,9 @@ export async function fetchEmbedding(
         body: JSON.stringify(
           isGoogleNative
             ? googleEmbeddingBody(cfg.model, current, cfg.outputDimensionality)
-            : { model: cfg.model, input: current },
+            : isDoubaoMultimodal
+              ? doubaoMultimodalEmbeddingBody(cfg.model, current)
+              : { model: cfg.model, input: current },
         ),
       })
 
@@ -143,12 +148,18 @@ export async function fetchEmbedding(
         const data = await resp.json()
         const embedding = isGoogleNative
           ? data?.embedding?.values ?? null
-          : data?.data?.[0]?.embedding ?? null
+          : isDoubaoMultimodal
+            ? data?.data?.embedding ?? null
+            : data?.data?.[0]?.embedding ?? null
         if (isNonEmptyNumberArray(embedding)) {
           lastEmbeddingError = null
           return embedding
         }
-        const expectedShape = isGoogleNative ? "embedding.values" : "data[0].embedding"
+        const expectedShape = isGoogleNative
+          ? "embedding.values"
+          : isDoubaoMultimodal
+            ? "data.embedding"
+            : "data[0].embedding"
         lastEmbeddingError = `Embedding response missing ${expectedShape} (got ${JSON.stringify(data).slice(0, 200)})`
         console.warn(`[Embedding] ${lastEmbeddingError}`)
         return null
@@ -215,6 +226,74 @@ function isGoogleEmbeddingConfig(cfg: EmbeddingConfig): boolean {
     || /:embedcontent(\?|$)/i.test(endpoint)
 }
 
+function isVolcengineEmbeddingEndpoint(endpoint: string): boolean {
+  try {
+    const host = new URL(endpoint).hostname.toLowerCase()
+    return host === "volces.com"
+      || host.endsWith(".volces.com")
+      || host.includes("volcengine")
+  } catch {
+    const authority = endpoint
+      .trim()
+      .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
+      .split(/[/?#]/, 1)[0]
+      .toLowerCase()
+    return authority === "volces.com"
+      || authority.endsWith(".volces.com")
+      || authority.includes("volcengine")
+  }
+}
+
+function isDoubaoMultimodalEmbeddingConfig(cfg: EmbeddingConfig): boolean {
+  return cfg.model.trim().toLowerCase().includes("doubao-embedding-vision")
+}
+
+function volcengineEmbeddingEndpoint(cfg: EmbeddingConfig): string {
+  const raw = cfg.endpoint.trim()
+  if (!isVolcengineEmbeddingEndpoint(raw)) return raw
+  const targetSuffix = isDoubaoMultimodalEmbeddingConfig(cfg)
+    ? "/embeddings/multimodal"
+    : "/embeddings"
+  return appendEndpointPath(raw, targetSuffix)
+}
+
+function appendEndpointPath(endpoint: string, targetSuffix: string): string {
+  const suffix = targetSuffix.replace(/^\/+/, "")
+  try {
+    const url = new URL(endpoint)
+    const path = url.pathname.replace(/\/+$/, "")
+    const lowerPath = path.toLowerCase()
+    const lowerSuffix = `/${suffix.toLowerCase()}`
+    if (lowerPath.endsWith(lowerSuffix)) {
+      url.pathname = path || "/"
+      return url.toString()
+    }
+    if (lowerPath.endsWith("/embeddings/multimodal") && lowerSuffix === "/embeddings") {
+      url.pathname = path.slice(0, -"/multimodal".length) || "/"
+      return url.toString()
+    }
+    if (lowerPath.endsWith("/embeddings") && lowerSuffix === "/embeddings/multimodal") {
+      url.pathname = `${path}/multimodal`
+      return url.toString()
+    }
+    url.pathname = `${path}/${suffix}`.replace(/\/{2,}/g, "/")
+    return url.toString()
+  } catch {
+    const [base, query = ""] = endpoint.split("?", 2)
+    const trimmed = base.replace(/\/+$/, "")
+    const lower = trimmed.toLowerCase()
+    const lowerSuffix = `/${suffix.toLowerCase()}`
+    const next = lower.endsWith(lowerSuffix)
+      ? trimmed
+      : lower.endsWith("/embeddings/multimodal") && lowerSuffix === "/embeddings"
+        ? trimmed.slice(0, -"/multimodal".length)
+      : lower.endsWith("/embeddings") && lowerSuffix === "/embeddings/multimodal"
+        ? `${trimmed}/multimodal`
+        : `${trimmed}/${suffix}`
+    return query ? `${next}?${query}` : next
+  }
+}
+
 function googleEmbeddingEndpoint(cfg: EmbeddingConfig): string {
   const raw = stripGoogleApiKeyQuery(cfg.endpoint.trim()).replace(/\/+$/, "")
   if (/:batchEmbedContents(\?|$)/i.test(raw)) {
@@ -263,6 +342,14 @@ function googleEmbeddingBody(
     body.output_dimensionality = Math.floor(outputDimensionality)
   }
   return body
+}
+
+function doubaoMultimodalEmbeddingBody(model: string, text: string): Record<string, unknown> {
+  return {
+    model,
+    encoding_format: "float",
+    input: [{ type: "text", text }],
+  }
 }
 
 // ── LanceDB v2 operations (via Rust Tauri commands) ──────────────────────

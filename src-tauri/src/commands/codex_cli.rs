@@ -87,7 +87,7 @@ pub async fn codex_cli_detect() -> Result<DetectResult, String> {
     // `codex` is a node shim (`#!/usr/bin/env node`); under a GUI launch the
     // inherited PATH lacks node, so hand it the login shell PATH or its
     // shebang fails with `env: node: No such file or directory`.
-    if let Some(path_env) = child_path_env() {
+    if let Some(path_env) = child_path_env().await {
         cmd.env("PATH", path_env);
     }
     let output = tokio::time::timeout(Duration::from_secs(3), cmd.arg("--version").output()).await;
@@ -148,7 +148,7 @@ pub async fn codex_cli_spawn(
     suppress_windows_console(&mut cmd);
     // See `codex_cli_detect`: the node shim needs the login shell PATH at run
     // time so its shebang resolves `node` under a GUI launch.
-    if let Some(path_env) = child_path_env() {
+    if let Some(path_env) = child_path_env().await {
         cmd.env("PATH", path_env);
     }
     cmd.args(build_codex_cli_args(&model, isolate_local_config));

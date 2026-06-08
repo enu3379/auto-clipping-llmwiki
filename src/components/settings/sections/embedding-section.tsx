@@ -53,6 +53,8 @@ const EMBEDDING_MODEL_SUGGESTIONS = [
   "gemini-embedding-001",
   "gemini-embedding-2",
   "text-embedding-004",
+  "doubao-embedding-vision",
+  "doubao-embedding-text-240715",
   "text-embedding-qwen3-embedding-0.6b",
   "nomic-embed-text",
   "mxbai-embed-large",
