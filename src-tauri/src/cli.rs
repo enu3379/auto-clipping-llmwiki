@@ -437,6 +437,9 @@ fn clip_search_summary(
         "skipped": response.skipped,
         "enqueue": response.enqueue,
         "enqueueError": response.enqueue_error,
+        "sourceWatchRescan": response.source_watch_rescan,
+        "ingestRequest": response.ingest_request,
+        "pipeline": response.pipeline,
         "responsePath": out,
     })
 }
@@ -521,6 +524,12 @@ struct ClipApiResponse {
     enqueue_result: Option<Value>,
     #[serde(default)]
     enqueue_error: Option<String>,
+    #[serde(default)]
+    source_watch_rescan: Option<Value>,
+    #[serde(default)]
+    ingest_request: Option<Value>,
+    #[serde(default)]
+    pipeline: Option<Value>,
 }
 
 fn print_help() {

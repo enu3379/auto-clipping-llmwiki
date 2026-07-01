@@ -1,6 +1,10 @@
 use super::files::relative_to_project;
 use super::*;
 use crate::{commands, web_search};
+use tauri::Emitter;
+use uuid::Uuid;
+
+const EVENT_SOURCE_INGEST_REQUESTED: &str = "source-ingest://requested";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -101,6 +105,7 @@ pub(super) fn handle_web_search_clip(app: &AppHandle, project_id: &str, body: &s
         Err(e) => return err(400, e),
     };
 
+    let written_paths: Vec<String> = clip.written.iter().map(|item| item.path.clone()).collect();
     let mut enqueue_result = None;
     let mut enqueue_error = None;
     if enqueue {
@@ -115,16 +120,109 @@ pub(super) fn handle_web_search_clip(app: &AppHandle, project_id: &str, body: &s
             Err(e) => enqueue_error = Some(e),
         }
     }
+    let source_watch_changed_count = enqueue_result
+        .as_ref()
+        .and_then(|value| value.get("changedTasks"))
+        .and_then(Value::as_array)
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let source_watch_rescan = json!({
+        "requested": enqueue,
+        "ok": enqueue && enqueue_error.is_none(),
+        "changedCount": source_watch_changed_count,
+        "error": enqueue_error.clone(),
+    });
+    let ingest_request = emit_source_ingest_request(
+        app,
+        &project,
+        enqueue,
+        &written_paths,
+        source_watch_changed_count,
+    );
 
     ok(json!({
         "ok": true,
         "projectId": project.id,
         "written": clip.written,
         "skipped": clip.skipped,
+        "sourceWatchRescan": source_watch_rescan.clone(),
+        "ingestRequest": ingest_request.clone(),
+        "pipeline": {
+            "rawSourcesWritten": written_paths.len(),
+            "sourceWatchRescan": source_watch_rescan,
+            "ingestRequest": ingest_request,
+            "note": "Search clipping writes raw/sources files first. Wiki pages are produced asynchronously by the desktop ingest worker after Source Watch or a source-ingest request accepts the paths.",
+        },
         "enqueue": enqueue,
         "enqueueResult": enqueue_result,
         "enqueueError": enqueue_error,
     }))
+}
+
+fn emit_source_ingest_request(
+    app: &AppHandle,
+    project: &ProjectEntry,
+    enqueue: bool,
+    source_paths: &[String],
+    source_watch_changed_count: usize,
+) -> Value {
+    if !enqueue {
+        return json!({
+            "requested": false,
+            "emitted": false,
+            "status": "not_requested",
+            "reason": "enqueue=false",
+            "sourcePaths": source_paths,
+        });
+    }
+    if source_watch_changed_count > 0 {
+        return json!({
+            "requested": true,
+            "emitted": false,
+            "status": "delegated_to_source_watch",
+            "mode": "source-watch-rescan",
+            "sourcePaths": source_paths,
+            "sourceWatchChangedCount": source_watch_changed_count,
+            "note": "Source Watch rescan detected written clips and emitted file-sync changes; the desktop file-sync listener owns ingest enqueue for these paths.",
+        });
+    }
+    if source_paths.is_empty() {
+        return json!({
+            "requested": false,
+            "emitted": false,
+            "status": "not_requested",
+            "reason": "no written clips",
+            "sourcePaths": source_paths,
+        });
+    }
+
+    let request_id = Uuid::new_v4().to_string();
+    let payload = json!({
+        "requestId": request_id,
+        "projectId": project.id.clone(),
+        "projectPath": project.path.clone(),
+        "sourcePaths": source_paths,
+        "origin": "web-search-clip",
+    });
+    match app.emit(EVENT_SOURCE_INGEST_REQUESTED, payload) {
+        Ok(()) => json!({
+            "requested": true,
+            "emitted": true,
+            "status": "requested",
+            "requestId": request_id,
+            "mode": "desktop-frontend-event",
+            "sourcePaths": source_paths,
+            "note": "Ingest runs asynchronously only when the desktop UI has this project active, Source Watch auto-ingest is enabled, and LLM config is usable.",
+        }),
+        Err(err) => json!({
+            "requested": true,
+            "emitted": false,
+            "status": "failed",
+            "requestId": request_id,
+            "sourcePaths": source_paths,
+            "reason": err.to_string(),
+        }),
+    }
 }
 
 fn load_embedding_config(app: &AppHandle) -> Option<commands::search::SearchEmbeddingConfig> {

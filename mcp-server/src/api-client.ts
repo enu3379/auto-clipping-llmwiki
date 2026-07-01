@@ -89,6 +89,9 @@ export interface ApiClipSearchResponse {
   enqueue?: boolean
   enqueueResult?: Record<string, unknown> | null
   enqueueError?: string | null
+  sourceWatchRescan?: Record<string, unknown> | null
+  ingestRequest?: Record<string, unknown> | null
+  pipeline?: Record<string, unknown> | null
 }
 
 export interface ApiGraphNode {
@@ -289,6 +292,9 @@ export class LlmWikiApiClient {
       enqueue: typeof json.enqueue === "boolean" ? json.enqueue : undefined,
       enqueueResult: requireRecordOrNull(json.enqueueResult),
       enqueueError: typeof json.enqueueError === "string" ? json.enqueueError : null,
+      sourceWatchRescan: requireRecordOrNull(json.sourceWatchRescan),
+      ingestRequest: requireRecordOrNull(json.ingestRequest),
+      pipeline: requireRecordOrNull(json.pipeline),
     }
   }
 

@@ -129,6 +129,9 @@ test("clipSearchResults posts selected result objects and parses written paths",
       enqueue: true,
       enqueueResult: { changed: 1 },
       enqueueError: null,
+      sourceWatchRescan: { requested: true, ok: true, changedCount: 1 },
+      ingestRequest: { requested: true, emitted: true, status: "requested" },
+      pipeline: { rawSourcesWritten: 1 },
     }), { status: 200 })
   }
 
@@ -160,6 +163,9 @@ test("clipSearchResults posts selected result objects and parses written paths",
   assert.equal(result.written[0]?.extractionStatus, "failed")
   assert.equal(result.skipped[0]?.reason, "blocked by blacklist: blocked.example.com")
   assert.deepEqual(result.enqueueResult, { changed: 1 })
+  assert.deepEqual(result.sourceWatchRescan, { requested: true, ok: true, changedCount: 1 })
+  assert.equal(result.ingestRequest?.status, "requested")
+  assert.equal(result.pipeline?.rawSourcesWritten, 1)
 })
 
 test("graph parses nodeType from API graph nodes", async () => {

@@ -48,6 +48,7 @@ let currentProjectPath = ""
 let currentAbortController: AbortController | null = null
 let lastWrittenFiles: string[] = []  // track files written by current ingest for cleanup
 let completedSinceIdle = 0
+const PROCESSING_REQUEUE_DEDUPE_WINDOW_MS = 10_000
 // Track whether any task has been processed since the last drain.
 // Prevents the sweep from running on every idle/no-op call.
 let processedSinceDrain = false
@@ -161,6 +162,14 @@ function upsertQueuedIngestTask(
 
   if (pendingRerun) {
     return pendingRerun.id
+  }
+
+  if (
+    processingTask &&
+    Date.now() - processingTask.addedAt <= PROCESSING_REQUEUE_DEDUPE_WINDOW_MS
+  ) {
+    processingTask.folderContext = folderContext || processingTask.folderContext
+    return processingTask.id
   }
 
   const task: IngestTask = {

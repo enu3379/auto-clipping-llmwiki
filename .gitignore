@@ -23,6 +23,9 @@ src-tauri/gen/
 .env.local
 .env.*.local
 
+# Local LLM Wiki CLI/API run artifacts
+.llm-wiki/
+
 # Internal docs (not shipped)
 docs/
 AGENTS.md

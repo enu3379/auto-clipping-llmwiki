@@ -134,7 +134,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "llm_wiki_clip_search_results",
-      description: "Save selected web-search results under raw/sources/search/YYYY-MM-DD and optionally trigger Source Watch ingest. Prefer run_file plus 1-based indexes from llm_wiki_web_search; direct result objects are still accepted for compatibility.",
+      description: "Save selected web-search results under raw/sources/search/YYYY-MM-DD and optionally request the desktop app's async ingest pipeline. Prefer run_file plus 1-based indexes from llm_wiki_web_search; direct result objects are still accepted for compatibility.",
       inputSchema: {
         type: "object",
         properties: {
@@ -152,7 +152,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           actor: { type: "string", description: "Optional actor name stored in clip frontmatter, for example codex or claude-code." },
           origin: { type: "object", description: "Optional provenance object stored as origin_log frontmatter." },
           origin_log: { type: "object", description: "Optional explicit origin_log frontmatter object." },
-          enqueue: { type: "boolean", description: "Trigger Source Watch rescan after writing. Defaults to true." },
+          enqueue: { type: "boolean", description: "Trigger Source Watch rescan and report the async ingest handoff status after writing. Defaults to true; wiki page generation still requires the desktop UI to have this project active with usable LLM settings." },
         },
         additionalProperties: false,
       },

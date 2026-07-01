@@ -153,6 +153,26 @@ describe("ingest-queue — enqueue & basic processing", () => {
     expect(mockAutoIngest).toHaveBeenCalledTimes(3)
     expect(getQueue()).toHaveLength(0)
   })
+
+  it("deduplicates near-simultaneous re-enqueue for a processing source", async () => {
+    mockAutoIngest.mockImplementation(() => new Promise(() => {}))
+
+    const firstIds = await enqueueBatch(TEST_ID, [
+      { sourcePath: "raw/sources/search/a.md", folderContext: "search" },
+    ])
+    await flushMicrotasks(2)
+
+    expect(getQueue()).toHaveLength(1)
+    expect(getQueue()[0].status).toBe("processing")
+
+    const secondIds = await enqueueBatch(TEST_ID, [
+      { sourcePath: "raw/sources/search/a.md", folderContext: "search" },
+    ])
+
+    expect(secondIds).toEqual(firstIds)
+    expect(getQueue()).toHaveLength(1)
+    expect(getQueue()[0].status).toBe("processing")
+  })
 })
 
 describe("ingest-queue — retry & failure", () => {

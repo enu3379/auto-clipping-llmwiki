@@ -3,9 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import type { ApiWebSearchResponse } from "../src/api-client.js"
+import type { ApiClipSearchResponse, ApiWebSearchResponse } from "../src/api-client.js"
 import {
   allWebSearchIndexes,
+  clipSearchSummary,
   defaultWebSearchRunPath,
   parseIndexes,
   readWebSearchRunFile,
@@ -88,4 +89,23 @@ test("webSearchSummary omits full results by default", () => {
   assert.equal(summary.resultCount, 2)
   assert.equal((summary.results as Array<Record<string, unknown>>).length, 1)
   assert.equal("fullResults" in summary, false)
+})
+
+test("clipSearchSummary includes async ingest pipeline status", () => {
+  const response: ApiClipSearchResponse = {
+    projectId: "p1",
+    written: [],
+    skipped: [],
+    enqueue: true,
+    enqueueError: null,
+    sourceWatchRescan: { requested: true, ok: true, changedCount: 1 },
+    ingestRequest: { requested: true, emitted: true, status: "requested" },
+    pipeline: { rawSourcesWritten: 1 },
+  }
+
+  const summary = clipSearchSummary(response)
+
+  assert.deepEqual(summary.sourceWatchRescan, response.sourceWatchRescan)
+  assert.deepEqual(summary.ingestRequest, response.ingestRequest)
+  assert.deepEqual(summary.pipeline, response.pipeline)
 })

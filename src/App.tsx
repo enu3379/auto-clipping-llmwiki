@@ -104,6 +104,11 @@ function App() {
   useEffect(() => {
     setupAutoSave()
     startClipWatcher()
+    import("@/lib/source-ingest-requests").then(({ startSourceIngestRequestListener }) => {
+      startSourceIngestRequestListener().catch((err) =>
+        console.error("Failed to start source ingest request listener:", err)
+      )
+    }).catch((err) => console.error("Failed to load source ingest request listener:", err))
   }, [])
 
   useEffect(() => {

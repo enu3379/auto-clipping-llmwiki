@@ -125,6 +125,9 @@ export function clipSearchSummary(
     skipped: response.skipped,
     enqueue: response.enqueue,
     enqueueError: response.enqueueError,
+    sourceWatchRescan: response.sourceWatchRescan,
+    ingestRequest: response.ingestRequest,
+    pipeline: response.pipeline,
   }
 }
 
