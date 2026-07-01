@@ -16,6 +16,7 @@
   <a href="#개발-규칙">개발 규칙</a> •
   <a href="#프로젝트-구조">구조</a> •
   <a href="#개발-실행">개발/실행</a> •
+  <a href="DEVELOPER_QUICKSTART_KO.md">빠른 시작</a> •
   <a href="#크레딧">크레딧</a>
 </p>
 
@@ -155,6 +156,10 @@ llm_wiki/
 ---
 
 ## 개발 / 실행
+
+GitHub와 터미널 사용에 익숙한 개발자는
+[`DEVELOPER_QUICKSTART_KO.md`](DEVELOPER_QUICKSTART_KO.md)를 따라 desktop app,
+Chrome extension, search API/CLI, MCP 흐름을 한 번에 세팅할 수 있다.
 
 ```bash
 # 사전 준비: Node.js 20+, Rust 1.70+
