@@ -6,8 +6,8 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
       width: 480px;
-      height: 500px;
-      max-height: 500px;
+      height: 560px;
+      max-height: 560px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       font-size: 13px;
       color: #1a1a2e;
@@ -60,6 +60,37 @@
       box-shadow: 0 0 0 2px rgba(99,102,241,0.1);
     }
     .field select { cursor: pointer; }
+    .automation {
+      padding: 8px 10px;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      background: white;
+      margin-bottom: 8px;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .toggle-row label {
+      font-size: 12px;
+      font-weight: 600;
+      color: #374151;
+    }
+    .toggle-row input {
+      width: 34px;
+      height: 18px;
+      accent-color: #4f46e5;
+      cursor: pointer;
+    }
+    .hint {
+      margin-top: 5px;
+      font-size: 11px;
+      line-height: 1.4;
+      color: #6b7280;
+      word-break: break-word;
+    }
     .url-preview {
       padding: 4px 8px;
       background: #f3f4f6;
@@ -78,7 +109,7 @@
       font-size: 12px;
       color: #374151;
       line-height: 1.6;
-      max-height: 260px;
+      max-height: 240px;
       overflow-y: auto;
       white-space: pre-wrap;
       word-break: break-word;
@@ -136,6 +167,14 @@
       <div class="url-preview" id="urlPreview">—</div>
     </div>
 
+    <div class="automation">
+      <div class="toggle-row">
+        <label for="autoClipSite">Auto-clip this site</label>
+        <input type="checkbox" id="autoClipSite" disabled>
+      </div>
+      <div class="hint" id="autoClipHint">Available after page extraction.</div>
+    </div>
+
     <div class="field">
       <label>Content Preview</label>
       <div id="contentPreview">Extracting content...</div>
@@ -150,6 +189,7 @@
     Content will be saved and auto-ingested into your wiki
   </div>
 
+  <script src="clipper.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

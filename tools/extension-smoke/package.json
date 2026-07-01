@@ -1,0 +1,12 @@
+{
+  "name": "llm-wiki-extension-smoke",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "node smoke-auto-clip.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.58.0"
+  }
+}

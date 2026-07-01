@@ -1,293 +1,237 @@
-const API_URLS = ["http://127.0.0.1:19827", "http://localhost:19827"];
-
 const statusBar = document.getElementById("statusBar");
 const titleInput = document.getElementById("titleInput");
 const urlPreview = document.getElementById("urlPreview");
 const contentPreview = document.getElementById("contentPreview");
 const clipBtn = document.getElementById("clipBtn");
 const projectSelect = document.getElementById("projectSelect");
+const autoClipSite = document.getElementById("autoClipSite");
+const autoClipHint = document.getElementById("autoClipHint");
 
-let extractedContent = "";
+const clipper = globalThis.LlmWikiClipper;
+
+let extractedPage = null;
 let pageUrl = "";
-let apiUrl = API_URLS[0];
+let currentOrigin = "";
+let currentTab = null;
+let settings = null;
+let isConnected = false;
 
-async function clipFetch(path, options) {
-  const method = String(options?.method || "GET").toUpperCase();
-  // Only retry idempotent reads across host aliases. Retrying POST /clip can
-  // duplicate a clip if the server handled the first request but the response
-  // failed before the extension received it.
-  const urls = method === "GET"
-    ? [apiUrl, ...API_URLS.filter((url) => url !== apiUrl)]
-    : [apiUrl];
-  let lastError;
+function setStatus(type, text) {
+  statusBar.className = `status ${type}`;
+  statusBar.textContent = text;
+}
 
-  for (const baseUrl of urls) {
-    try {
-      const res = await fetch(`${baseUrl}${path}`, options);
-      apiUrl = baseUrl;
-      return res;
-    } catch (err) {
-      lastError = err;
-    }
+function selectedProjectPath() {
+  return projectSelect.value || "";
+}
+
+function selectedProjectName() {
+  return projectSelect.options[projectSelect.selectedIndex]?.textContent || "project";
+}
+
+function renderProjects(projects) {
+  projectSelect.innerHTML = "";
+
+  if (!projects.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = isConnected ? "No projects" : "App not running";
+    projectSelect.appendChild(opt);
+    return;
   }
 
-  throw lastError || new Error("Unable to connect to LLM Wiki");
+  const preferredPath = settings.defaultProjectPath
+    || projects.find((project) => project.current)?.path
+    || projects[0].path;
+
+  for (const project of projects) {
+    const opt = document.createElement("option");
+    opt.value = project.path;
+    opt.textContent = project.name + (project.current ? " (current)" : "");
+    if (project.path === preferredPath) opt.selected = true;
+    projectSelect.appendChild(opt);
+  }
 }
 
-async function checkConnection() {
-  try {
-    const res = await clipFetch("/status", { method: "GET" });
-    const data = await res.json();
-    if (data.ok) {
-      statusBar.className = "status connected";
-      statusBar.textContent = "✓ Connected to LLM Wiki";
-      await loadProjects();
-      return true;
-    }
-  } catch {}
-  statusBar.className = "status disconnected";
-  statusBar.textContent = "✗ LLM Wiki app is not running";
-  clipBtn.disabled = true;
-  projectSelect.innerHTML = '<option value="">App not running</option>';
-  return false;
+function previewText(page) {
+  if (page.excerpt) {
+    return `${page.excerpt}\n\n---\n\n${page.content}`;
+  }
+  return page.content;
 }
 
-async function loadProjects() {
+async function loadConnectionState() {
   try {
-    const res = await clipFetch("/projects", { method: "GET" });
-    const data = await res.json();
-    if (data.ok && data.projects?.length > 0) {
-      projectSelect.innerHTML = "";
-      for (const proj of data.projects) {
-        const opt = document.createElement("option");
-        opt.value = proj.path;
-        opt.textContent = proj.name + (proj.current ? " (current)" : "");
-        if (proj.current) opt.selected = true;
-        projectSelect.appendChild(opt);
-      }
-      return;
-    }
-  } catch {}
-  // Fallback to current project
-  try {
-    const res = await clipFetch("/project", { method: "GET" });
-    const data = await res.json();
-    if (data.ok && data.path) {
-      const name = data.path.replace(/\\/g, "/").split("/").pop() || data.path;
-      projectSelect.innerHTML = `<option value="${data.path}">${name}</option>`;
-    }
+    isConnected = await clipper.checkConnection(settings);
+    setStatus("connected", "Connected to LLM Wiki");
+    const projects = await clipper.loadProjects(settings);
+    renderProjects(projects);
   } catch {
-    projectSelect.innerHTML = '<option value="">No projects</option>';
+    isConnected = false;
+    setStatus("disconnected", "LLM Wiki app is not running");
+    renderProjects([]);
   }
 }
 
 async function extractContent() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) return;
+    if (!tab?.id) {
+      contentPreview.textContent = "No active tab";
+      return;
+    }
 
+    currentTab = tab;
     pageUrl = tab.url || "";
+    currentOrigin = clipper.getOrigin(pageUrl);
     titleInput.value = tab.title || "Untitled";
-    urlPreview.textContent = pageUrl;
+    urlPreview.textContent = pageUrl || "--";
 
-    // First inject Readability.js and Turndown.js into the page
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ["Readability.js", "Turndown.js"],
-    });
+    if (!clipper.isClippableUrl(pageUrl)) {
+      contentPreview.textContent = "This page cannot be clipped.";
+      clipBtn.disabled = true;
+      await refreshAutoControls();
+      return;
+    }
 
-    // Then extract content using them
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () => {
-        try {
-          // Use Readability to extract article content
-          const documentClone = document.cloneNode(true);
-          const reader = new window.Readability(documentClone);
-          const article = reader.parse();
-
-          if (!article || !article.content) {
-            return { error: "Readability could not extract content" };
-          }
-
-          // Use Turndown to convert HTML to Markdown
-          const turndown = new window.TurndownService({
-            headingStyle: "atx",
-            codeBlockStyle: "fenced",
-            bulletListMarker: "-",
-          });
-
-          // Add table support
-          turndown.addRule("tableCell", {
-            filter: ["th", "td"],
-            replacement: (content) => ` ${content.trim()} |`,
-          });
-          turndown.addRule("tableRow", {
-            filter: "tr",
-            replacement: (content) => `|${content}\n`,
-          });
-          turndown.addRule("table", {
-            filter: "table",
-            replacement: (content) => {
-              // Add header separator after first row
-              const lines = content.trim().split("\n");
-              if (lines.length > 0) {
-                const cols = (lines[0].match(/\|/g) || []).length - 1;
-                const separator = "|" + " --- |".repeat(cols);
-                lines.splice(1, 0, separator);
-              }
-              return "\n\n" + lines.join("\n") + "\n\n";
-            },
-          });
-
-          // Remove images that are tracking pixels or tiny
-          turndown.addRule("removeSmallImages", {
-            filter: (node) => {
-              if (node.nodeName !== "IMG") return false;
-              const w = parseInt(node.getAttribute("width") || "999");
-              const h = parseInt(node.getAttribute("height") || "999");
-              return w < 10 || h < 10;
-            },
-            replacement: () => "",
-          });
-
-          const markdown = turndown.turndown(article.content);
-
-          return {
-            title: article.title,
-            content: markdown,
-            excerpt: article.excerpt || "",
-            siteName: article.siteName || "",
-            length: article.length || 0,
-          };
-        } catch (err) {
-          return { error: err.message };
-        }
-      },
-    });
-
-    if (results?.[0]?.result) {
-      const result = results[0].result;
-
-      if (result.error) {
-        contentPreview.textContent = `Extraction failed: ${result.error}. Falling back...`;
-        await fallbackExtract(tab.id);
-        return;
-      }
-
-      // Use Readability's title if better
-      if (result.title && result.title.length > 5) {
-        titleInput.value = result.title;
-      }
-
-      extractedContent = result.content;
-      contentPreview.textContent = extractedContent;
-
-      if (result.excerpt) {
-        contentPreview.textContent = "📝 " + result.excerpt + "\n\n---\n\n" + extractedContent;
-      }
-
-      clipBtn.disabled = false;
-    } else {
-      await fallbackExtract(tab.id);
+    extractedPage = await clipper.extractContentFromTab(tab.id, tab);
+    titleInput.value = extractedPage.title;
+    contentPreview.textContent = previewText(extractedPage);
+    clipBtn.disabled = !isConnected || !selectedProjectPath();
+    if (!isConnected) {
+      clipBtn.textContent = "App not running - cannot save";
     }
   } catch (err) {
+    extractedPage = null;
     contentPreview.textContent = `Error: ${err.message}`;
-  }
-}
-
-// Fallback: simple DOM extraction if Readability fails
-async function fallbackExtract(tabId) {
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
-      const clone = document.body.cloneNode(true);
-      ["script", "style", "nav", "header", "footer", ".sidebar", ".ad", ".comments"]
-        .forEach((sel) => clone.querySelectorAll(sel).forEach((el) => el.remove()));
-
-      return clone.innerText
-        .split("\n")
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0)
-        .join("\n\n")
-        .slice(0, 50000);
-    },
-  });
-
-  if (results?.[0]?.result) {
-    extractedContent = results[0].result;
-    contentPreview.textContent = extractedContent;
-    clipBtn.disabled = false;
-  } else {
-    contentPreview.textContent = "Failed to extract content";
+    clipBtn.disabled = true;
+  } finally {
+    await refreshAutoControls();
   }
 }
 
 async function sendClip() {
-  const selectedProject = projectSelect.value;
-  if (!selectedProject) {
-    statusBar.className = "status error";
-    statusBar.textContent = "✗ Please select a project";
+  const projectPath = selectedProjectPath();
+  if (!projectPath) {
+    setStatus("error", "Please select a project");
+    return;
+  }
+  if (!extractedPage) {
+    setStatus("error", "No extracted content to save");
     return;
   }
 
   clipBtn.disabled = true;
-  statusBar.className = "status sending";
-  statusBar.textContent = "⏳ Sending to LLM Wiki...";
+  setStatus("sending", "Sending to LLM Wiki...");
 
   try {
-    const res = await clipFetch("/clip", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title: titleInput.value,
-        url: pageUrl,
-        content: extractedContent,
-        projectPath: selectedProject,
-      }),
-    });
+    settings = await clipper.getSettings();
+    await clipper.saveSettings({ defaultProjectPath: projectPath });
+    const data = await clipper.sendClip({
+      title: titleInput.value.trim() || extractedPage.title,
+      url: pageUrl,
+      content: extractedPage.content,
+      projectPath,
+    }, settings);
 
-    const data = await res.json();
-
-    if (data.ok) {
-      const projectName = projectSelect.options[projectSelect.selectedIndex]?.textContent || "project";
-      statusBar.className = "status success";
-      statusBar.textContent = `✓ Saved to ${projectName}`;
-      clipBtn.textContent = "✓ Clipped!";
-    } else {
-      statusBar.className = "status error";
-      statusBar.textContent = `✗ Error: ${data.error}`;
-      clipBtn.disabled = false;
-    }
+    setStatus("success", `Saved to ${selectedProjectName()}`);
+    clipBtn.textContent = "Clipped";
+    return data;
   } catch (err) {
-    statusBar.className = "status error";
-    statusBar.textContent = `✗ Connection failed: ${err.message}`;
+    setStatus("error", `Error: ${err.message}`);
     clipBtn.disabled = false;
   }
 }
 
-clipBtn.addEventListener("click", sendClip);
+async function refreshAutoControls() {
+  settings = await clipper.getSettings();
+  const projectPath = selectedProjectPath();
 
-// Resize content preview to fill available space without causing popup scroll
+  if (!currentOrigin || !clipper.isClippableUrl(pageUrl)) {
+    autoClipSite.disabled = true;
+    autoClipSite.checked = false;
+    autoClipHint.textContent = "Auto-clip is available on regular web pages.";
+    return;
+  }
+
+  if (!projectPath) {
+    autoClipSite.disabled = true;
+    autoClipSite.checked = false;
+    autoClipHint.textContent = "Select a project before enabling auto-clip.";
+    return;
+  }
+
+  autoClipSite.disabled = false;
+  const originEnabled = settings.autoClipOrigins.includes(currentOrigin);
+  const hasPermission = await clipper.hasOriginPermission(currentOrigin);
+  autoClipSite.checked = settings.autoClipEnabled && originEnabled && hasPermission;
+
+  if (autoClipSite.checked) {
+    autoClipHint.textContent = `Future pages on ${currentOrigin} will be clipped to ${selectedProjectName()}.`;
+  } else if (originEnabled && !hasPermission) {
+    autoClipHint.textContent = `Permission is missing for ${currentOrigin}. Re-enable auto-clip to grant it.`;
+  } else {
+    autoClipHint.textContent = `Enable to clip future pages on ${currentOrigin} automatically.`;
+  }
+}
+
+async function toggleAutoClipForSite() {
+  const projectPath = selectedProjectPath();
+  if (!currentOrigin || !projectPath) {
+    autoClipSite.checked = false;
+    await refreshAutoControls();
+    return;
+  }
+
+  settings = await clipper.getSettings();
+
+  if (autoClipSite.checked) {
+    const granted = await clipper.requestOriginPermission(currentOrigin);
+    if (!granted) {
+      autoClipSite.checked = false;
+      autoClipHint.textContent = `Chrome did not grant access to ${currentOrigin}.`;
+      return;
+    }
+
+    const origins = Array.from(new Set([...settings.autoClipOrigins, currentOrigin]));
+    await clipper.saveSettings({
+      autoClipEnabled: true,
+      autoClipOrigins: origins,
+      defaultProjectPath: projectPath,
+    });
+  } else {
+    const origins = settings.autoClipOrigins.filter((origin) => origin !== currentOrigin);
+    await clipper.saveSettings({
+      autoClipOrigins: origins,
+      autoClipEnabled: origins.length > 0 ? settings.autoClipEnabled : false,
+    });
+  }
+
+  await refreshAutoControls();
+}
+
 function resizePreview() {
-  const totalHeight = 500; // matches html/body height
+  const totalHeight = 560;
   const preview = document.getElementById("contentPreview");
   if (!preview) return;
 
-  // Calculate space used by everything except the preview
   const previewRect = preview.getBoundingClientRect();
-  const bottomSpace = totalHeight - previewRect.top - 60; // 60px for button + footer
-  const maxH = Math.max(100, Math.min(300, bottomSpace));
-  preview.style.maxHeight = maxH + "px";
+  const bottomSpace = totalHeight - previewRect.top - 60;
+  const maxHeight = Math.max(90, Math.min(240, bottomSpace));
+  preview.style.maxHeight = `${maxHeight}px`;
 }
 
+clipBtn.addEventListener("click", sendClip);
+autoClipSite.addEventListener("change", toggleAutoClipForSite);
+projectSelect.addEventListener("change", async () => {
+  const projectPath = selectedProjectPath();
+  if (projectPath) await clipper.saveSettings({ defaultProjectPath: projectPath });
+  await refreshAutoControls();
+});
+
 (async () => {
-  const connected = await checkConnection();
-  // Always extract content so user can preview, even if app not running
+  settings = await clipper.getSettings();
+  await loadConnectionState();
   await extractContent();
-  if (!connected) {
-    clipBtn.disabled = true;
-    clipBtn.textContent = "📎 App not running — cannot save";
-  }
   setTimeout(resizePreview, 100);
 })();
