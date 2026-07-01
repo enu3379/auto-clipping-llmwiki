@@ -50,7 +50,7 @@ pub struct WebSearchResult {
     pub content: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchRequest {
     pub queries: Vec<String>,
@@ -58,7 +58,7 @@ pub struct WebSearchRequest {
     pub max_results: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchResponse {
     pub ok: bool,
@@ -69,14 +69,14 @@ pub struct WebSearchResponse {
     pub errors: Vec<WebSearchErrorItem>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchErrorItem {
     pub query: String,
     pub error: String,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ClipExtractMode {
     None,
@@ -91,7 +91,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipSearchRequest {
     pub query: String,
@@ -113,14 +113,14 @@ pub struct ClipSearchRequest {
     pub enqueue: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipSearchResponse {
     pub written: Vec<WrittenClip>,
     pub skipped: Vec<SkippedClip>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WrittenClip {
     pub path: String,
@@ -133,7 +133,7 @@ pub struct WrittenClip {
     pub extraction_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkippedClip {
     pub title: String,

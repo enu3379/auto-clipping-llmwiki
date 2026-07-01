@@ -1,4 +1,5 @@
 mod api_server;
+pub mod cli;
 mod clip_server;
 mod commands;
 mod cors;

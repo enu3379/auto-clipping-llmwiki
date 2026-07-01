@@ -58,8 +58,15 @@ When API unauthenticated mode is enabled, omit `LLM_WIKI_API_TOKEN`. If MCP acce
 - `llm_wiki_read_file`: read an allowed text file such as `wiki/index.md`.
 - `llm_wiki_reviews`: list Review tab items. Defaults to unresolved items and supports `status`, `type`, and `limit` filters.
 - `llm_wiki_search`: search with the app's shared keyword/vector backend.
+- `llm_wiki_web_search`: run the configured web search provider. Writes the full normalized response to a JSON run file and returns a short indexed summary.
+- `llm_wiki_clip_search_results`: clip selected web-search results. Prefer `run_file` plus 1-based `indexes`; direct result objects remain supported for compatibility.
 - `llm_wiki_graph`: query the app's knowledge graph endpoint.
 - `llm_wiki_rescan_sources`: trigger a Source Watch rescan using the user's configured rules.
+
+Web-search MCP calls are designed as a thin control plane. By default, `llm_wiki_web_search`
+writes `.llm-wiki/runs/web-search/<runId>.json` under the MCP process working directory and
+returns only `resultPath`, counts, errors, and the first few indexed results. Pass that `resultPath`
+back as `run_file` with `indexes` to `llm_wiki_clip_search_results`.
 
 ## Security model
 

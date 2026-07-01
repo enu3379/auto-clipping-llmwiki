@@ -59,18 +59,26 @@ Manifest V3 3-컴포넌트(Popup / Service Worker / Content Script)로 판정한
 판정 파이프라인은 하나로 이어진다: `토글 → scheme → F5 중복 → F1 화이트리스트/F6 AI출처 →
 F4 블랙리스트·본문길이 → 추출 → F3 태그 → POST → F5 이력 기록`.
 
-### 2) 검색 API 클리핑 (`src-tauri/src/web_search/`)
+### 2) 검색 API / CLI 클리핑 (`src-tauri/src/web_search/`, `src-tauri/src/cli.rs`)
 
 프로바이더: **Tavily · SerpApi · SearXNG · Ollama · Brave · Firecrawl.**
-로컬 API에 노출(현재 작업 중, 미커밋):
+로컬 API, CLI, MCP run-file 흐름으로 노출한다.
 
 | Method | Path | 하는 일 |
 |--------|------|--------|
 | `POST` | `/api/v1/projects/{id}/web-search` | 프로바이더로 웹 검색, 정규화된 결과 반환 |
 | `POST` | `/api/v1/projects/{id}/web-search/clip` | 검색 결과를 선택 추출해 위키에 클립(+선택적 인제스트 큐 적재) |
 
-> **현재 진행 상태**: F1–F6 확장은 커밋됨. 검색 API 클리핑(`web_search.rs` 등)은
-> 작업 중이라 아직 미커밋 상태다.
+CLI는 같은 local API를 호출하고, 큰 검색 결과는 JSON run 파일에 저장한 뒤 짧은 요약만 stdout에 출력한다.
+
+```bash
+llm-wiki web-search --query "rust tauri local api" --out .llm-wiki/runs/web-search/rust.json
+llm-wiki clip-search --run-file .llm-wiki/runs/web-search/rust.json --indexes 1,3
+```
+
+MCP 도구도 이 방향에 맞춰 `llm_wiki_web_search`는 run 파일 경로 + 인덱스 요약을 반환하고,
+`llm_wiki_clip_search_results`는 `run_file` + `indexes`를 받아 클립한다. 대형 result JSON을
+MCP 토큰으로 다시 주고받는 흐름은 호환 옵션으로만 남긴다.
 
 ---
 
@@ -134,6 +142,7 @@ llm_wiki/
 ├── src-tauri/src/
 │   ├── web_search.rs               # 검색 API 클리핑 (6 프로바이더) ← 포크 핵심 2
 │   ├── web_search/                 # clips.rs / providers.rs / tests.rs
+│   ├── cli.rs                      # web-search / clip-search CLI
 │   └── api_server/                 # knowledge.rs 등 — web-search[/clip] 엔드포인트
 ├── src/                            # React 19 + TS 프론트엔드 (베이스)
 ├── mcp-server/                     # 로컬 MCP 서버 (베이스)

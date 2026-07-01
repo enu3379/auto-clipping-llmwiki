@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import path from "node:path"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
@@ -14,9 +15,18 @@ import {
   type ApiReviewItem,
   type ApiReviewsResponse,
   type ApiSearchResult,
-  type ApiWebSearchResponse,
+  type ApiWebSearchResult,
 } from "./api-client.js"
 import { VERSION } from "./version.js"
+import {
+  allWebSearchIndexes,
+  clipSearchSummary,
+  parseIndexes,
+  readWebSearchRunFile,
+  selectWebSearchResults,
+  webSearchSummary,
+  writeWebSearchRunFile,
+} from "./web-search-runs.js"
 
 const DEFAULT_PROJECT_ID = "current"
 const MAX_TEXT_BYTES = 120_000
@@ -106,7 +116,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "llm_wiki_web_search",
-      description: "Run configured web search through the LLM Wiki desktop API. Results are normalized and stateless; pass selected result objects to llm_wiki_clip_search_results to save them as sources.",
+      description: "Run configured web search through the LLM Wiki desktop API. The full normalized response is written to a run file; the MCP response returns the file path plus a short indexed summary for token-efficient clipping.",
       inputSchema: {
         type: "object",
         properties: {
@@ -115,20 +125,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           queries: { type: "array", items: { type: "string" }, description: "One or more web search queries." },
           provider: { type: "string", enum: ["tavily", "serpapi", "searxng", "ollama", "brave", "firecrawl"], description: "Optional provider override. Defaults to Settings -> Web Search provider." },
           max_results: { type: "number", description: "Maximum results per query. The local API clamps to its configured maximum." },
+          out: { type: "string", description: "Optional JSON run-file path. Defaults to .llm-wiki/runs/web-search/<runId>.json under the MCP process working directory." },
+          summary_limit: { type: "number", description: "Number of indexed results to return inline. Defaults to 5." },
+          include_results: { type: "boolean", description: "Return full result objects inline for compatibility. Defaults to false; prefer the run file for token economy." },
         },
         additionalProperties: false,
       },
     },
     {
       name: "llm_wiki_clip_search_results",
-      description: "Save selected web-search result objects under raw/sources/search/YYYY-MM-DD and optionally trigger Source Watch ingest. This tool is stateless: pass result objects returned by llm_wiki_web_search.",
+      description: "Save selected web-search results under raw/sources/search/YYYY-MM-DD and optionally trigger Source Watch ingest. Prefer run_file plus 1-based indexes from llm_wiki_web_search; direct result objects are still accepted for compatibility.",
       inputSchema: {
         type: "object",
         properties: {
           project_id: { type: "string", description: "Project UUID, project path, or 'current'. Defaults to current." },
-          query: { type: "string", description: "The query that produced the selected results." },
+          query: { type: "string", description: "The query that produced the selected results. Defaults to the selected result query when available." },
           run_id: { type: "string", description: "Optional search run ID returned by llm_wiki_web_search." },
-          results: { type: "array", items: { type: "object" }, description: "Selected normalized web-search result objects." },
+          run_file: { type: "string", description: "JSON run file returned by llm_wiki_web_search." },
+          indexes: { type: "array", items: { type: "number" }, description: "1-based result indexes from the run file to clip." },
+          all: { type: "boolean", description: "Clip all results from run_file. Defaults to false." },
+          results: { type: "array", items: { type: "object" }, description: "Selected normalized web-search result objects. Prefer run_file plus indexes for lower token use." },
           extract: { type: "string", enum: ["none", "selected"], description: "Whether to best-effort extract selected result pages. Defaults to selected." },
           whitelist: { type: "array", items: { type: "string" }, description: "Optional URL/domain allowlist for this clip request. When present, unmatched results are skipped." },
           blacklist: { type: "array", items: { type: "string" }, description: "Optional URL/domain blocklist for this clip request. Blocked results are skipped before extraction." },
@@ -138,7 +154,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           origin_log: { type: "object", description: "Optional explicit origin_log frontmatter object." },
           enqueue: { type: "boolean", description: "Trigger Source Watch rescan after writing. Defaults to true." },
         },
-        required: ["query", "results"],
         additionalProperties: false,
       },
     },
@@ -225,26 +240,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           provider: enumArg(args.provider, ["tavily", "serpapi", "searxng", "ollama", "brave", "firecrawl"] as const, undefined),
           maxResults: numberArg(args.max_results),
         })
-        return textResult(formatWebSearchResponse(search))
+        const resultPath = await writeWebSearchRunFile(search, optionalStringArg(args.out))
+        return textResult(JSON.stringify(webSearchSummary(
+          search,
+          resultPath,
+          numberArg(args.summary_limit) ?? 5,
+          boolArg(args.include_results, false),
+        ), null, 2))
       }
       case "llm_wiki_clip_search_results": {
         await assertMcpEnabled()
-        const query = stringArg(args.query, "query")
-        const results = resultObjectsArg(args.results)
+        const selection = await webSearchSelectionArg(args)
+        const query = optionalStringArg(args.query)
+          ?? selection.results.find((result) => result.query)?.query
+          ?? "web-search"
         const clipped = await client.clipSearchResults(projectId(args), {
           query,
-          runId: optionalStringArg(args.run_id),
-          results,
+          runId: optionalStringArg(args.run_id) ?? selection.runId,
+          results: selection.results,
           extract: enumArg(args.extract, ["none", "selected"] as const, "selected"),
           whitelist: optionalStringArrayArg(args.whitelist),
           blacklist: optionalStringArrayArg(args.blacklist),
           allowPrivateHosts: typeof args.allow_private_hosts === "boolean" ? args.allow_private_hosts : undefined,
           actor: optionalStringArg(args.actor),
-          origin: optionalObjectArg(args.origin),
+          origin: optionalObjectArg(args.origin) ?? selection.origin,
           originLog: optionalObjectArg(args.origin_log),
           enqueue: typeof args.enqueue === "boolean" ? args.enqueue : undefined,
         })
-        return textResult(JSON.stringify(clipped, null, 2))
+        return textResult(JSON.stringify(clipSearchSummary(clipped, {
+          runId: optionalStringArg(args.run_id) ?? selection.runId,
+          runFile: selection.runFile,
+          selectedIndexes: selection.indexes,
+        }), null, 2))
       }
       case "llm_wiki_graph": {
         await assertMcpEnabled()
@@ -356,6 +383,54 @@ function resultObjectsArg(value: unknown): Array<import("./api-client.js").ApiWe
   return value.map((item) => asObject(item) as unknown as import("./api-client.js").ApiWebSearchResult)
 }
 
+async function webSearchSelectionArg(args: Record<string, unknown>): Promise<{
+  results: ApiWebSearchResult[]
+  runId?: string
+  runFile?: string
+  indexes?: number[]
+  origin?: Record<string, unknown>
+}> {
+  if (args.results !== undefined) {
+    return { results: resultObjectsArg(args.results), indexes: indexesArg(args.indexes) }
+  }
+
+  const runFileArg = optionalStringArg(args.run_file)
+  if (!runFileArg) {
+    throw new McpError(ErrorCode.InvalidParams, "clip-search requires either results or run_file")
+  }
+  const runFile = path.resolve(runFileArg)
+  const run = await readRunFileArg(runFile)
+  const indexes = boolArg(args.all, false)
+    ? allWebSearchIndexes(run.results)
+    : indexesArg(args.indexes)
+  if (!indexes) {
+    throw new McpError(ErrorCode.InvalidParams, "clip-search with run_file requires indexes or all")
+  }
+  return {
+    results: selectWebSearchResults(run.results, indexes),
+    runId: run.runId,
+    runFile,
+    indexes,
+    origin: { type: "mcp", tool: "llm-wiki", runFile },
+  }
+}
+
+function indexesArg(value: unknown): number[] | undefined {
+  try {
+    return parseIndexes(value)
+  } catch (err) {
+    throw new McpError(ErrorCode.InvalidParams, err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function readRunFileArg(runFile: string) {
+  try {
+    return await readWebSearchRunFile(runFile)
+  } catch (err) {
+    throw new McpError(ErrorCode.InvalidParams, err instanceof Error ? err.message : String(err))
+  }
+}
+
 function truncateText(value: string, maxBytes: number): string {
   const bytes = Buffer.byteLength(value, "utf8")
   if (bytes <= maxBytes) return value
@@ -406,17 +481,6 @@ function formatSearchResults(query: string, search: { results: ApiSearchResult[]
     lines.push("")
   })
   return lines.join("\n")
-}
-
-function formatWebSearchResponse(search: ApiWebSearchResponse): string {
-  return JSON.stringify({
-    projectId: search.projectId,
-    runId: search.runId,
-    provider: search.provider,
-    resultCount: search.results.length,
-    results: search.results,
-    errors: search.errors,
-  }, null, 2)
 }
 
 function formatReviews(response: ApiReviewsResponse): string {
