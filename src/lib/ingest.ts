@@ -27,8 +27,6 @@ import { checkIngestCache, saveIngestCache } from "@/lib/ingest-cache"
 import { sanitizeIngestedFileContent } from "@/lib/ingest-sanitize"
 import { mergePageContent, type MergeFn } from "@/lib/page-merge"
 import { withProjectLock } from "@/lib/project-mutex"
-import { parseFrontmatter } from "@/lib/frontmatter"
-import { makeQuerySlug } from "@/lib/wiki-filename"
 import type { FileNode } from "@/types/wiki"
 import {
   extractAndSaveSourceImages,
@@ -41,53 +39,34 @@ import type { MultimodalConfig } from "@/stores/wiki-store"
 import { GENERATION_WIKI_TYPES } from "@/lib/wiki-page-types"
 import { computeContextBudget } from "@/lib/context-budget"
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
+import { appendIngestDebugLog } from "@/lib/ingest-debug-log"
+import {
+  contentMatchesTargetLanguage,
+  rewriteIngestPathFromTitleForTargetLanguage,
+} from "@/lib/ingest-language-guard"
+export {
+  rewriteIngestPathFromTitleForTargetLanguage,
+} from "@/lib/ingest-language-guard"
+import {
+  computeIngestGenerationMaxTokensForSource,
+  computeIngestReviewMaxTokensForGeneration,
+  computeIngestSourceBudget,
+} from "@/lib/ingest-budget"
+export {
+  computeIngestGenerationMaxTokens,
+  computeIngestGenerationMaxTokensForSource,
+  computeIngestReviewMaxTokens,
+  computeIngestReviewMaxTokensForGeneration,
+  computeIngestSourceBudget,
+} from "@/lib/ingest-budget"
 
-const LONG_SOURCE_MIN_BUDGET = 8_000
-const LONG_SOURCE_MAX_SINGLE_PASS_BUDGET = 300_000
 const LONG_SOURCE_CHUNK_MIN = 12_000
 const LONG_SOURCE_CHUNK_MAX = 60_000
 const LONG_SOURCE_DIGEST_MAX = 15_000
 const LONG_SOURCE_CHUNK_ANALYSIS_MAX = 40_000
-const INGEST_GENERATION_TOKENS_DEFAULT = 8_192
-const INGEST_GENERATION_TOKENS_128K = 16_384
-const INGEST_GENERATION_TOKENS_256K = 24_576
-const INGEST_GENERATION_TOKENS_512K = 32_768
 const REVIEW_STAGE_MIN_SIGNAL_CHARS = 10_000
 const REVIEW_STAGE_MIN_FILE_BLOCKS = 4
 const AGGREGATE_WIKI_PATHS = ["wiki/index.md", "wiki/overview.md", "wiki/log.md"] as const
-
-async function appendIngestDebugLog(
-  projectPath: string,
-  sourceIdentity: string,
-  stage: string,
-  details: Record<string, unknown> = {},
-): Promise<void> {
-  if (!isIngestDebugLogEnabled()) return
-  try {
-    const dir = `${normalizePath(projectPath)}/.llm-wiki`
-    const path = `${dir}/ingest-debug.log`
-    await createDirectory(dir)
-    const existing = await tryReadFile(path)
-    const line = JSON.stringify({
-      at: new Date().toISOString(),
-      sourceIdentity,
-      stage,
-      ...details,
-    })
-    await writeFile(path, `${existing}${existing.endsWith("\n") || !existing ? "" : "\n"}${line}\n`)
-  } catch {
-    // Debug logging must never affect ingest.
-  }
-}
-
-function isIngestDebugLogEnabled(): boolean {
-  if (import.meta.env?.DEV) return true
-  try {
-    return globalThis.localStorage?.getItem("llm-wiki:ingest-debug") === "1"
-  } catch {
-    return false
-  }
-}
 
 function appendSavedImageRefsForCaption(content: string, images: SavedImage[]): string {
   if (images.length === 0) return content
@@ -356,8 +335,6 @@ function resolveCaptionConfig(
   }
 }
 import { buildLanguageDirective } from "@/lib/output-language"
-import { detectLanguage } from "@/lib/detect-language"
-import { sameScriptFamily } from "@/lib/language-metadata"
 import {
   loadProjectWikiSchemaRouting,
   validateWikiPageRouting,
@@ -1521,40 +1498,6 @@ async function autoIngestImpl(
   return writtenPaths
 }
 
-/**
- * Per-file language guard. Strips frontmatter + code/math blocks, runs
- * detectLanguage on the remainder, and returns whether the content is in
- * a language family compatible with the target. This catches cases where
- * the LLM follows the format spec but writes a single page in a wrong
- * language (observed ~once in 5 real-LLM runs on MiniMax-M2.7-highspeed).
- */
-function contentMatchesTargetLanguage(content: string, target: string): boolean {
-  // Strip frontmatter
-  const fmEnd = content.indexOf("\n---\n", 3)
-  let body = fmEnd > 0 ? content.slice(fmEnd + 5) : content
-  // Strip code + math
-  body = body
-    .replace(/```[\s\S]*?```/g, "")
-    .replace(/\$\$[\s\S]*?\$\$/g, "")
-    .replace(/\$[^$\n]*\$/g, "")
-  const sample = body.slice(0, 1500)
-  if (sample.trim().length < 20) return true // too short to judge
-
-  const detected = detectLanguage(sample)
-
-  // Compatible families: CJK targets accept CJK variants; Latin targets
-  // accept any Latin family (English may mis-detect as Italian/French for
-  // short idiomatic samples — that's fine). Cross-family is the real bug.
-  const cjk = new Set(["Chinese", "Traditional Chinese", "Japanese", "Korean", "KoreanTechnicalEnglish"])
-  const distinctNonLatin = new Set(["Arabic", "Persian", "Hindi", "Thai", "Hebrew"])
-  const targetIsCjk = cjk.has(target)
-  const detectedIsCjk = cjk.has(detected)
-  if (targetIsCjk) return detectedIsCjk
-  if (distinctNonLatin.has(target)) return detected === target
-  if (distinctNonLatin.has(detected)) return sameScriptFamily(target, detected)
-  return !detectedIsCjk
-}
-
 function isLogPath(relativePath: string): boolean {
   return relativePath === "wiki/log.md" || relativePath.endsWith("/log.md")
 }
@@ -1566,48 +1509,6 @@ function isListingPath(relativePath: string): boolean {
     relativePath === "wiki/overview.md" ||
     relativePath.endsWith("/overview.md")
   )
-}
-
-const CJK_OUTPUT_LANGUAGES = new Set(["Chinese", "Traditional Chinese", "Japanese", "Korean", "KoreanTechnicalEnglish"])
-
-function containsCjk(text: string): boolean {
-  return /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/u.test(text)
-}
-
-function extractGeneratedPageTitle(content: string): string | null {
-  const title = parseFrontmatter(content).frontmatter?.title
-  if (typeof title === "string" && title.trim()) return title.trim()
-  const heading = content.match(/^#\s+(.+)$/m)?.[1]?.trim()
-  return heading || null
-}
-
-export function rewriteIngestPathFromTitleForTargetLanguage(
-  relativePath: string,
-  content: string,
-  targetLang: string | undefined,
-): string {
-  if (!targetLang || targetLang === "auto" || !CJK_OUTPUT_LANGUAGES.has(targetLang)) {
-    return relativePath
-  }
-  if (
-    isLogPath(relativePath) ||
-    isListingPath(relativePath) ||
-    relativePath.startsWith("wiki/sources/")
-  ) {
-    return relativePath
-  }
-  const title = extractGeneratedPageTitle(content)
-  if (!title || !containsCjk(title)) return relativePath
-
-  const slash = relativePath.lastIndexOf("/")
-  const dir = slash >= 0 ? relativePath.slice(0, slash + 1) : ""
-  const fileName = slash >= 0 ? relativePath.slice(slash + 1) : relativePath
-  if (containsCjk(fileName)) return relativePath
-
-  const slug = makeQuerySlug(title)
-  if (!containsCjk(slug)) return relativePath
-  const nextPath = `${dir}${slug}.md`
-  return isSafeIngestPath(nextPath) ? nextPath : relativePath
 }
 
 export function aggregatePathsNeedingRepair(writtenPaths: string[], warnings: string[]): string[] {
@@ -2477,47 +2378,6 @@ async function tryReadSourceTextFile(path: string): Promise<string> {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
-}
-
-export function computeIngestSourceBudget(
-  maxContextSize: number | undefined,
-  stableContextLength: number,
-): number {
-  const { maxCtx, responseReserve } = computeContextBudget(maxContextSize)
-  const stableReserve = Math.min(Math.floor(maxCtx * 0.25), Math.max(12_000, stableContextLength))
-  const instructionReserve = Math.max(12_000, Math.floor(maxCtx * 0.08))
-  const available = maxCtx - responseReserve - stableReserve - instructionReserve
-  const upper = Math.min(LONG_SOURCE_MAX_SINGLE_PASS_BUDGET, Math.max(LONG_SOURCE_MIN_BUDGET, Math.floor(maxCtx * 0.6)))
-  return clampNumber(Math.floor(available), LONG_SOURCE_MIN_BUDGET, upper)
-}
-
-export function computeIngestGenerationMaxTokens(maxContextSize: number | undefined): number {
-  const { maxCtx } = computeContextBudget(maxContextSize)
-  if (maxCtx >= 512_000) return INGEST_GENERATION_TOKENS_512K
-  if (maxCtx >= 256_000) return INGEST_GENERATION_TOKENS_256K
-  if (maxCtx >= 128_000) return INGEST_GENERATION_TOKENS_128K
-  return INGEST_GENERATION_TOKENS_DEFAULT
-}
-
-export function computeIngestGenerationMaxTokensForSource(
-  maxContextSize: number | undefined,
-  sourceContextLength: number,
-  analysisLength: number,
-): number {
-  const base = computeIngestGenerationMaxTokens(maxContextSize)
-  const signalChars = Math.max(0, sourceContextLength) + Math.max(0, analysisLength)
-  if (signalChars <= 20_000) return Math.min(base, INGEST_GENERATION_TOKENS_DEFAULT)
-  if (signalChars <= 80_000) return Math.min(base, INGEST_GENERATION_TOKENS_128K)
-  if (signalChars <= 180_000) return Math.min(base, INGEST_GENERATION_TOKENS_256K)
-  return base
-}
-
-export function computeIngestReviewMaxTokensForGeneration(generationMaxTokens: number): number {
-  return Math.min(8_192, Math.max(4_096, Math.floor(generationMaxTokens / 2)))
-}
-
-export function computeIngestReviewMaxTokens(maxContextSize: number | undefined): number {
-  return computeIngestReviewMaxTokensForGeneration(computeIngestGenerationMaxTokens(maxContextSize))
 }
 
 function splitOversizedBlock(block: string, targetChars: number): string[] {
