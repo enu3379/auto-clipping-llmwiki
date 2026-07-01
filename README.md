@@ -88,7 +88,9 @@ MCP 토큰으로 다시 주고받는 흐름은 호환 옵션으로만 남긴다.
 
 ### 코드 작성 규칙
 
-무언가를 새로 짜기 전에 이 체크리스트를 순서대로 통과시킨다. 앞 단계에서 걸리면 거기서 멈춘다.
+**"가장 좋은 코드는 안 짠 코드"** — [ponytail](https://github.com/DietrichGebert/ponytail) 스킬의
+*게으른 시니어 개발자* 마인드를 이 프로젝트의 기본 태도로 삼는다. 무언가를 새로 짜기 전에 이
+decision ladder를 순서대로 통과시키고, 앞 단계에서 걸리면 거기서 멈춘다.
 
 ```
 1. Does this need to exist?   → no: skip it (YAGNI)
