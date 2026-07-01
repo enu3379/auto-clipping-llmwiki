@@ -1,11 +1,20 @@
 param(
-  [Parameter(Mandatory = $true)]
-  [string]$Version
+  [Parameter(Mandatory = $false)]
+  [string]$Version = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "../..")
+if ([string]::IsNullOrWhiteSpace($Version)) {
+  Push-Location $RepoRoot
+  try {
+    $Version = (node -p "require('./package.json').version").Trim()
+  } finally {
+    Pop-Location
+  }
+}
+
 $ExePath = Join-Path $RepoRoot "src-tauri/target/release/llm-wiki.exe"
 $PdfiumPath = Join-Path $RepoRoot "src-tauri/pdfium/pdfium.dll"
 $McpRoot = Join-Path $RepoRoot "mcp-server"

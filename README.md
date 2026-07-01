@@ -170,11 +170,22 @@ npm run tauri dev      # 개발
 npm run tauri build    # 프로덕션 빌드
 ```
 
+Windows에서 installer/MSI 번들링 에러가 나면 먼저 local exe만 빌드해서 실행한다.
+
+```powershell
+npm run build:local-app
+Copy-Item src-tauri\pdfium\pdfium.dll src-tauri\target\release\pdfium.dll -Force
+.\src-tauri\target\release\llm-wiki.exe
+```
+
 **크롬 확장 로드**
 
 1. `chrome://extensions` 열기 → "개발자 모드" 켜기
 2. "압축해제된 확장 프로그램을 로드합니다" → `extension/` 폴더 선택
 3. 팝업에서 프로젝트 선택 → 자동클립 토글·화이트/블랙리스트·세션 태그 설정
+
+확장 팝업에 `App not running` / `LLM Wiki app is not running`이 뜨면 desktop app이 실행되지
+않은 상태다. 먼저 `npm run tauri dev` 또는 빌드된 `LLM Wiki.exe`/`LLM Wiki.app`을 실행해야 한다.
 
 **빠른 확인 흐름**: 앱 실행 → 프로젝트 생성 → Settings에서 LLM(및 필요 시 Web Search) 설정 →
 확장에서 사이트 Allow → 해당 사이트 진입 시 자동 클립되어 위키에 인제스트되는지 확인.
