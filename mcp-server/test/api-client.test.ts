@@ -67,6 +67,101 @@ test("search posts JSON body to current project", async () => {
   assert.equal(results.results[0]?.vectorScore, 0.9)
 })
 
+test("webSearch posts queries and parses normalized results", async () => {
+  let url = ""
+  let body = ""
+  const fetchImpl = async (requestUrl: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    url = String(requestUrl)
+    body = String(init?.body ?? "")
+    return new Response(JSON.stringify({
+      ok: true,
+      projectId: "p1",
+      runId: "run-1",
+      provider: "tavily",
+      results: [{
+        title: "Result",
+        url: "https://example.com",
+        snippet: "Hit",
+        source: "example.com",
+        provider: "tavily",
+        rank: 1,
+        score: 0.75,
+        query: "rust",
+        searchedAt: "2026-07-01T00:00:00Z",
+      }],
+      errors: [],
+    }), { status: 200 })
+  }
+
+  const client = new LlmWikiApiClient({ baseUrl: "http://localhost:19828", fetchImpl })
+  const result = await client.webSearch("current", ["rust"], { provider: "tavily", maxResults: 3 })
+
+  assert.equal(url, "http://localhost:19828/api/v1/projects/current/web-search")
+  assert.deepEqual(JSON.parse(body), { queries: ["rust"], provider: "tavily", maxResults: 3 })
+  assert.equal(result.runId, "run-1")
+  assert.equal(result.results[0]?.provider, "tavily")
+  assert.equal(result.results[0]?.score, 0.75)
+})
+
+test("clipSearchResults posts selected result objects and parses written paths", async () => {
+  let body = ""
+  const fetchImpl = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    body = String(init?.body ?? "")
+    return new Response(JSON.stringify({
+      ok: true,
+      projectId: "p1",
+      written: [{
+        path: "raw/sources/search/2026-07-01/example.md",
+        title: "Result",
+        url: "https://example.com",
+        provider: "tavily",
+        rank: 1,
+        extractionStatus: "failed",
+        extractionError: "timeout",
+      }],
+      skipped: [{
+        title: "Blocked",
+        url: "https://blocked.example.com",
+        provider: "tavily",
+        rank: 2,
+        reason: "blocked by blacklist: blocked.example.com",
+      }],
+      enqueue: true,
+      enqueueResult: { changed: 1 },
+      enqueueError: null,
+    }), { status: 200 })
+  }
+
+  const client = new LlmWikiApiClient({ fetchImpl })
+  const result = await client.clipSearchResults("current", {
+    query: "rust",
+    runId: "run-1",
+    results: [{
+      title: "Result",
+      url: "https://example.com",
+      snippet: "Hit",
+      source: "example.com",
+      provider: "tavily",
+      rank: 1,
+    }],
+    extract: "none",
+    blacklist: ["blocked.example.com"],
+    allowPrivateHosts: false,
+    actor: "codex",
+    origin: { type: "cli-log" },
+    enqueue: true,
+  })
+
+  assert.equal(JSON.parse(body).runId, "run-1")
+  assert.equal(JSON.parse(body).results[0].url, "https://example.com")
+  assert.deepEqual(JSON.parse(body).blacklist, ["blocked.example.com"])
+  assert.equal(JSON.parse(body).allowPrivateHosts, false)
+  assert.equal(result.written[0]?.path, "raw/sources/search/2026-07-01/example.md")
+  assert.equal(result.written[0]?.extractionStatus, "failed")
+  assert.equal(result.skipped[0]?.reason, "blocked by blacklist: blocked.example.com")
+  assert.deepEqual(result.enqueueResult, { changed: 1 })
+})
+
 test("graph parses nodeType from API graph nodes", async () => {
   const fetchImpl = async (): Promise<Response> => (
     new Response(JSON.stringify({

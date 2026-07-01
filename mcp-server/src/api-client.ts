@@ -37,6 +37,60 @@ export interface ApiSearchResponse {
   vectorHits?: number
 }
 
+export interface ApiWebSearchResult {
+  title: string
+  url: string
+  snippet: string
+  source: string
+  provider: string
+  rank: number
+  score?: number
+  query?: string
+  searchedAt?: string
+  markdown?: string
+  content?: string
+}
+
+export interface ApiWebSearchError {
+  query: string
+  error: string
+}
+
+export interface ApiWebSearchResponse {
+  projectId?: string
+  runId: string
+  provider?: string
+  results: ApiWebSearchResult[]
+  errors: ApiWebSearchError[]
+}
+
+export interface ApiWrittenSearchClip {
+  path: string
+  title: string
+  url: string
+  provider: string
+  rank: number
+  extractionStatus: string
+  extractionError?: string
+}
+
+export interface ApiSkippedSearchClip {
+  title: string
+  url: string
+  provider: string
+  rank: number
+  reason: string
+}
+
+export interface ApiClipSearchResponse {
+  projectId?: string
+  written: ApiWrittenSearchClip[]
+  skipped: ApiSkippedSearchClip[]
+  enqueue?: boolean
+  enqueueResult?: Record<string, unknown> | null
+  enqueueError?: string | null
+}
+
 export interface ApiGraphNode {
   id: string
   label: string
@@ -193,6 +247,51 @@ export class LlmWikiApiClient {
     }
   }
 
+  async webSearch(projectId = "current", queries: string[], options: { provider?: string; maxResults?: number } = {}): Promise<ApiWebSearchResponse> {
+    const json = await this.request(`/projects/${encodeURIComponent(projectId)}/web-search`, {
+      method: "POST",
+      body: {
+        queries,
+        provider: options.provider,
+        maxResults: options.maxResults,
+      },
+    })
+    return {
+      projectId: typeof json.projectId === "string" ? json.projectId : undefined,
+      runId: String(json.runId ?? ""),
+      provider: typeof json.provider === "string" ? json.provider : undefined,
+      results: Array.isArray(json.results) ? json.results.map(parseWebSearchResult) : [],
+      errors: Array.isArray(json.errors) ? json.errors.map(parseWebSearchError) : [],
+    }
+  }
+
+  async clipSearchResults(projectId = "current", body: {
+    query: string
+    runId?: string
+    results: ApiWebSearchResult[]
+    extract?: "none" | "selected"
+    whitelist?: string[]
+    blacklist?: string[]
+    allowPrivateHosts?: boolean
+    actor?: string
+    origin?: Record<string, unknown>
+    originLog?: Record<string, unknown>
+    enqueue?: boolean
+  }): Promise<ApiClipSearchResponse> {
+    const json = await this.request(`/projects/${encodeURIComponent(projectId)}/web-search/clip`, {
+      method: "POST",
+      body,
+    })
+    return {
+      projectId: typeof json.projectId === "string" ? json.projectId : undefined,
+      written: Array.isArray(json.written) ? json.written.map(parseWrittenSearchClip) : [],
+      skipped: Array.isArray(json.skipped) ? json.skipped.map(parseSkippedSearchClip) : [],
+      enqueue: typeof json.enqueue === "boolean" ? json.enqueue : undefined,
+      enqueueResult: requireRecordOrNull(json.enqueueResult),
+      enqueueError: typeof json.enqueueError === "string" ? json.enqueueError : null,
+    }
+  }
+
   async graph(projectId = "current", options: { q?: string; nodeType?: string; limit?: number } = {}): Promise<{ nodes: ApiGraphNode[]; edges: ApiGraphEdge[] }> {
     const params = new URLSearchParams()
     if (options.q) params.set("q", options.q)
@@ -282,6 +381,60 @@ function parseSearchResult(value: unknown): ApiSearchResult {
     }) : [],
     vectorScore: numberOrUndefined(obj.vectorScore) ?? null,
   }
+}
+
+function parseWebSearchResult(value: unknown): ApiWebSearchResult {
+  const obj = requireObject(value, "web search result")
+  return {
+    title: String(obj.title ?? ""),
+    url: String(obj.url ?? ""),
+    snippet: String(obj.snippet ?? ""),
+    source: String(obj.source ?? ""),
+    provider: String(obj.provider ?? ""),
+    rank: numberOrUndefined(obj.rank) ?? 0,
+    score: numberOrUndefined(obj.score),
+    query: typeof obj.query === "string" ? obj.query : undefined,
+    searchedAt: typeof obj.searchedAt === "string" ? obj.searchedAt : undefined,
+    markdown: typeof obj.markdown === "string" ? obj.markdown : undefined,
+    content: typeof obj.content === "string" ? obj.content : undefined,
+  }
+}
+
+function parseWebSearchError(value: unknown): ApiWebSearchError {
+  const obj = requireObject(value, "web search error")
+  return {
+    query: String(obj.query ?? ""),
+    error: String(obj.error ?? ""),
+  }
+}
+
+function parseWrittenSearchClip(value: unknown): ApiWrittenSearchClip {
+  const obj = requireObject(value, "written search clip")
+  return {
+    path: String(obj.path ?? ""),
+    title: String(obj.title ?? ""),
+    url: String(obj.url ?? ""),
+    provider: String(obj.provider ?? ""),
+    rank: numberOrUndefined(obj.rank) ?? 0,
+    extractionStatus: String(obj.extractionStatus ?? obj.extraction_status ?? ""),
+    extractionError: typeof obj.extractionError === "string" ? obj.extractionError : undefined,
+  }
+}
+
+function parseSkippedSearchClip(value: unknown): ApiSkippedSearchClip {
+  const obj = requireObject(value, "skipped search clip")
+  return {
+    title: String(obj.title ?? ""),
+    url: String(obj.url ?? ""),
+    provider: String(obj.provider ?? ""),
+    rank: numberOrUndefined(obj.rank) ?? 0,
+    reason: String(obj.reason ?? ""),
+  }
+}
+
+function requireRecordOrNull(value: unknown): Record<string, unknown> | null {
+  if (value === null || value === undefined) return null
+  return requireObject(value, "object")
 }
 
 function parseReviewStatus(value: unknown): ApiReviewStatus {

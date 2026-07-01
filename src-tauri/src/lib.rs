@@ -7,6 +7,7 @@ mod proxy;
 mod server_bind;
 mod tray;
 mod types;
+mod web_search;
 
 use panic_guard::run_guarded;
 use std::sync::Mutex;

@@ -14,6 +14,7 @@ import {
   type ApiReviewItem,
   type ApiReviewsResponse,
   type ApiSearchResult,
+  type ApiWebSearchResponse,
 } from "./api-client.js"
 import { VERSION } from "./version.js"
 
@@ -104,6 +105,44 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "llm_wiki_web_search",
+      description: "Run configured web search through the LLM Wiki desktop API. Results are normalized and stateless; pass selected result objects to llm_wiki_clip_search_results to save them as sources.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          project_id: { type: "string", description: "Project UUID, project path, or 'current'. Defaults to current." },
+          query: { type: "string", description: "Single web search query. Use either query or queries." },
+          queries: { type: "array", items: { type: "string" }, description: "One or more web search queries." },
+          provider: { type: "string", enum: ["tavily", "serpapi", "searxng", "ollama", "brave", "firecrawl"], description: "Optional provider override. Defaults to Settings -> Web Search provider." },
+          max_results: { type: "number", description: "Maximum results per query. The local API clamps to its configured maximum." },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "llm_wiki_clip_search_results",
+      description: "Save selected web-search result objects under raw/sources/search/YYYY-MM-DD and optionally trigger Source Watch ingest. This tool is stateless: pass result objects returned by llm_wiki_web_search.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          project_id: { type: "string", description: "Project UUID, project path, or 'current'. Defaults to current." },
+          query: { type: "string", description: "The query that produced the selected results." },
+          run_id: { type: "string", description: "Optional search run ID returned by llm_wiki_web_search." },
+          results: { type: "array", items: { type: "object" }, description: "Selected normalized web-search result objects." },
+          extract: { type: "string", enum: ["none", "selected"], description: "Whether to best-effort extract selected result pages. Defaults to selected." },
+          whitelist: { type: "array", items: { type: "string" }, description: "Optional URL/domain allowlist for this clip request. When present, unmatched results are skipped." },
+          blacklist: { type: "array", items: { type: "string" }, description: "Optional URL/domain blocklist for this clip request. Blocked results are skipped before extraction." },
+          allow_private_hosts: { type: "boolean", description: "Allow localhost, private IPs, and local/internal hostnames. Defaults to false unless Settings override it." },
+          actor: { type: "string", description: "Optional actor name stored in clip frontmatter, for example codex or claude-code." },
+          origin: { type: "object", description: "Optional provenance object stored as origin_log frontmatter." },
+          origin_log: { type: "object", description: "Optional explicit origin_log frontmatter object." },
+          enqueue: { type: "boolean", description: "Trigger Source Watch rescan after writing. Defaults to true." },
+        },
+        required: ["query", "results"],
+        additionalProperties: false,
+      },
+    },
+    {
       name: "llm_wiki_graph",
       description: "Query the project knowledge graph through the desktop app API.",
       inputSchema: {
@@ -179,6 +218,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         })
         return textResult(formatSearchResults(query, search))
       }
+      case "llm_wiki_web_search": {
+        await assertMcpEnabled()
+        const queries = webSearchQueriesArg(args)
+        const search = await client.webSearch(projectId(args), queries, {
+          provider: enumArg(args.provider, ["tavily", "serpapi", "searxng", "ollama", "brave", "firecrawl"] as const, undefined),
+          maxResults: numberArg(args.max_results),
+        })
+        return textResult(formatWebSearchResponse(search))
+      }
+      case "llm_wiki_clip_search_results": {
+        await assertMcpEnabled()
+        const query = stringArg(args.query, "query")
+        const results = resultObjectsArg(args.results)
+        const clipped = await client.clipSearchResults(projectId(args), {
+          query,
+          runId: optionalStringArg(args.run_id),
+          results,
+          extract: enumArg(args.extract, ["none", "selected"] as const, "selected"),
+          whitelist: optionalStringArrayArg(args.whitelist),
+          blacklist: optionalStringArrayArg(args.blacklist),
+          allowPrivateHosts: typeof args.allow_private_hosts === "boolean" ? args.allow_private_hosts : undefined,
+          actor: optionalStringArg(args.actor),
+          origin: optionalObjectArg(args.origin),
+          originLog: optionalObjectArg(args.origin_log),
+          enqueue: typeof args.enqueue === "boolean" ? args.enqueue : undefined,
+        })
+        return textResult(JSON.stringify(clipped, null, 2))
+      }
       case "llm_wiki_graph": {
         await assertMcpEnabled()
         const graph = await client.graph(projectId(args), {
@@ -240,6 +307,16 @@ function optionalStringArg(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined
 }
 
+function optionalStringArrayArg(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value)) {
+    throw new McpError(ErrorCode.InvalidParams, "expected string array")
+  }
+  return value
+    .filter((item): item is string => typeof item === "string" && item.trim() !== "")
+    .map((item) => item.trim())
+}
+
 function boolArg(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback
 }
@@ -248,8 +325,35 @@ function numberArg(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
-function enumArg<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+function enumArg<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T
+function enumArg<T extends string>(value: unknown, allowed: readonly T[], fallback: T | undefined): T | undefined
+function enumArg<T extends string>(value: unknown, allowed: readonly T[], fallback: T | undefined): T | undefined {
   return typeof value === "string" && allowed.includes(value as T) ? value as T : fallback
+}
+
+function optionalObjectArg(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new McpError(ErrorCode.InvalidParams, "expected object")
+  }
+  return value as Record<string, unknown>
+}
+
+function webSearchQueriesArg(args: Record<string, unknown>): string[] {
+  if (Array.isArray(args.queries)) {
+    const queries = args.queries
+      .filter((query): query is string => typeof query === "string" && query.trim() !== "")
+      .map((query) => query.trim())
+    if (queries.length > 0) return queries
+  }
+  return [stringArg(args.query, "query")]
+}
+
+function resultObjectsArg(value: unknown): Array<import("./api-client.js").ApiWebSearchResult> {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new McpError(ErrorCode.InvalidParams, "results must be a non-empty array")
+  }
+  return value.map((item) => asObject(item) as unknown as import("./api-client.js").ApiWebSearchResult)
 }
 
 function truncateText(value: string, maxBytes: number): string {
@@ -302,6 +406,17 @@ function formatSearchResults(query: string, search: { results: ApiSearchResult[]
     lines.push("")
   })
   return lines.join("\n")
+}
+
+function formatWebSearchResponse(search: ApiWebSearchResponse): string {
+  return JSON.stringify({
+    projectId: search.projectId,
+    runId: search.runId,
+    provider: search.provider,
+    resultCount: search.results.length,
+    results: search.results,
+    errors: search.errors,
+  }, null, 2)
 }
 
 function formatReviews(response: ApiReviewsResponse): string {
