@@ -34,6 +34,25 @@ export function contentMatchesTargetLanguage(content: string, target: string): b
 
 const CJK_OUTPUT_LANGUAGES = new Set(["Chinese", "Traditional Chinese", "Japanese", "Korean", "KoreanTechnicalEnglish"])
 
+export function isCjkOutputLanguage(language: string | undefined): boolean {
+  return Boolean(language && CJK_OUTPUT_LANGUAGES.has(language))
+}
+
+export function shouldRunContentLanguageGuard(
+  relativePath: string,
+  targetLang: string | undefined,
+): boolean {
+  if (!targetLang || targetLang === "auto") return false
+  const path = relativePath.replace(/\\/g, "/")
+  if (isLogPath(path) || isListingPath(path)) return false
+  const isEntityOrSource =
+    path.startsWith("wiki/entities/") ||
+    path.includes("/entities/") ||
+    path.startsWith("wiki/sources/") ||
+    path.includes("/sources/")
+  return !isEntityOrSource || isCjkOutputLanguage(targetLang)
+}
+
 function isLogPath(relativePath: string): boolean {
   return relativePath === "wiki/log.md" || relativePath.endsWith("/log.md")
 }

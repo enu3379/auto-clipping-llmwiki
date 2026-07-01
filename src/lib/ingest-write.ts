@@ -11,6 +11,7 @@ import { sourceSummaryMediaRefsForExternalMarkdown } from "@/lib/ingest-images"
 import {
   contentMatchesTargetLanguage,
   rewriteIngestPathFromTitleForTargetLanguage,
+  shouldRunContentLanguageGuard,
 } from "@/lib/ingest-language-guard"
 import { buildPageMergeSystemPrompt } from "@/lib/ingest-prompts"
 import { sanitizeIngestedFileContent } from "@/lib/ingest-sanitize"
@@ -395,24 +396,11 @@ export async function writeFileBlocks(
     }
 
     // Language guard: reject individual FILE blocks whose body contradicts
-    // the user-set target language. Skip:
-    // - log.md (structural, short)
-    // - /sources/ and /entities/ pages: these legitimately cite cross-
-    //   language proper nouns (a German philosophy source summary naturally
-    //   quotes Russian philosophers) which confuses naive script-based
-    //   detection. Keep the check for /concepts/ pages, which should be
-    //   authoritative content in the target language.
-    const isLog = isLogPath(relativePath)
-    const isEntityOrSource =
-      relativePath.startsWith("wiki/entities/") ||
-      relativePath.includes("/entities/") ||
-      relativePath.startsWith("wiki/sources/") ||
-      relativePath.includes("/sources/")
+    // the user-set target language. See `shouldRunContentLanguageGuard` for
+    // the source/entity exception policy.
     if (
       targetLang &&
-      targetLang !== "auto" &&
-      !isLog &&
-      !isEntityOrSource &&
+      shouldRunContentLanguageGuard(relativePath, targetLang) &&
       !contentMatchesTargetLanguage(content, targetLang)
     ) {
       const msg = `Dropped "${relativePath}" - body language doesn't match target ${targetLang}.`
