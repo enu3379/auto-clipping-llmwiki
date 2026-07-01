@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>LLM Wiki Clipper Settings</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      color: #111827;
+      background: #f8fafc;
+    }
+    .shell {
+      width: min(860px, calc(100vw - 40px));
+      margin: 28px auto;
+    }
+    .header {
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      font-weight: 700;
+    }
+    .subtle {
+      margin: 0;
+      color: #64748b;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .panel {
+      padding: 16px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      background: white;
+    }
+    .panel h2 {
+      margin: 0 0 8px;
+      font-size: 15px;
+      font-weight: 700;
+    }
+    label {
+      display: block;
+      margin-bottom: 6px;
+      color: #475569;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    textarea, input {
+      width: 100%;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      background: white;
+      color: #111827;
+      font: inherit;
+      outline: none;
+    }
+    textarea {
+      min-height: 210px;
+      padding: 10px;
+      resize: vertical;
+      line-height: 1.5;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+    }
+    input {
+      padding: 8px 10px;
+    }
+    textarea:focus, input:focus {
+      border-color: #4f46e5;
+      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+    }
+    .examples {
+      margin-top: 8px;
+      color: #64748b;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .row > * {
+      flex: 1;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      margin-top: 16px;
+    }
+    button {
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 9px 13px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .primary {
+      background: #4f46e5;
+      color: white;
+    }
+    .secondary {
+      border-color: #cbd5e1;
+      background: white;
+      color: #334155;
+    }
+    .status {
+      min-height: 20px;
+      margin-top: 12px;
+      font-size: 13px;
+      color: #475569;
+    }
+    .status.ok { color: #047857; }
+    .status.warn { color: #b45309; }
+    .status.error { color: #b91c1c; }
+    @media (max-width: 720px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+      .shell {
+        width: calc(100vw - 24px);
+        margin: 18px auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="header">
+      <h1>LLM Wiki Clipper Settings</h1>
+      <p class="subtle">화이트리스트는 자동 클리핑 후보가 되고, 블랙리스트는 수동/자동 클리핑 모두에서 제외됩니다.</p>
+    </div>
+
+    <div class="grid">
+      <section class="panel">
+        <h2>Whitelist</h2>
+        <label for="whitelistInput">Auto-clip patterns</label>
+        <textarea id="whitelistInput" spellcheck="false" placeholder="example.com&#10;*.arxiv.org&#10;docs.example.com/guide/*"></textarea>
+        <div class="examples">한 줄에 하나씩 입력. 도메인, <code>*.domain.com</code>, <code>domain.com/path/*</code> 형식을 지원합니다.</div>
+      </section>
+
+      <section class="panel">
+        <h2>Blacklist</h2>
+        <label for="blacklistInput">Never-clip patterns</label>
+        <textarea id="blacklistInput" spellcheck="false" placeholder="mail.google.com&#10;*.bank.com&#10;company.internal"></textarea>
+        <div class="examples">블랙리스트가 우선합니다. 화이트리스트에 동시에 걸려도 클리핑하지 않습니다.</div>
+      </section>
+    </div>
+
+    <section class="panel" style="margin-top:16px">
+      <h2>Automation Gates</h2>
+      <div class="row">
+        <div>
+          <label for="whitelistDwellInput">Whitelist dwell ms</label>
+          <input id="whitelistDwellInput" type="number" min="0" step="100">
+        </div>
+        <div>
+          <label for="dwellInput">General dwell ms</label>
+          <input id="dwellInput" type="number" min="1000" step="1000">
+        </div>
+        <div>
+          <label for="minContentInput">Min content chars</label>
+          <input id="minContentInput" type="number" min="0" step="50">
+        </div>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button id="reloadBtn" class="secondary" type="button">Reload</button>
+      <button id="saveBtn" class="primary" type="button">Save Settings</button>
+    </div>
+    <div id="status" class="status"></div>
+  </main>
+
+  <script src="clipper.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

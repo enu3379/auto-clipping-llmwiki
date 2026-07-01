@@ -50,7 +50,7 @@ async function patchManifest(testExtensionDir, origin) {
 function startTestServer() {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
-      if (req.url === "/article") {
+      if (req.url === "/article" || req.url === "/blocked") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         res.end(`<!doctype html>
 <html>
@@ -159,7 +159,9 @@ async function main() {
         apiUrl: "http://127.0.0.1:19827",
         defaultProjectPath: projectPath,
         autoClipEnabled: true,
-        autoClipOrigins: [origin],
+        autoClipOrigins: [],
+        whitelist: ["127.0.0.1"],
+        blacklist: ["127.0.0.1/blocked"],
         sessionTag: "smoke-test",
         minContentLength: 50,
         whitelistDwellMs: 250,
@@ -168,6 +170,10 @@ async function main() {
     }, { origin: testServer.origin, projectPath });
 
     const page = await context.newPage();
+    await page.goto(`${testServer.origin}/blocked`, { waitUntil: "domcontentloaded" });
+    const blockedClipFile = await waitForClip(before, 2500);
+    assert(!blockedClipFile, "Blacklisted page was clipped");
+
     await page.goto(testServer.url, { waitUntil: "domcontentloaded" });
 
     const clipFile = await waitForClip(before);

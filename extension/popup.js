@@ -7,6 +7,9 @@ const projectSelect = document.getElementById("projectSelect");
 const autoClipSite = document.getElementById("autoClipSite");
 const autoClipHint = document.getElementById("autoClipHint");
 const sessionTagInput = document.getElementById("sessionTagInput");
+const allowSiteBtn = document.getElementById("allowSiteBtn");
+const blockSiteBtn = document.getElementById("blockSiteBtn");
+const openOptionsBtn = document.getElementById("openOptionsBtn");
 
 const clipper = globalThis.LlmWikiClipper;
 
@@ -28,6 +31,14 @@ function selectedProjectPath() {
 
 function selectedProjectName() {
   return projectSelect.options[projectSelect.selectedIndex]?.textContent || "project";
+}
+
+function currentHostname() {
+  try {
+    return new URL(pageUrl).hostname;
+  } catch {
+    return "";
+  }
 }
 
 function renderProjects(projects) {
@@ -95,6 +106,14 @@ async function extractContent() {
       return;
     }
 
+    settings = await clipper.getSettings();
+    if (clipper.isBlacklistedUrl(pageUrl, settings)) {
+      contentPreview.textContent = "This page matches the blacklist and will not be clipped.";
+      clipBtn.disabled = true;
+      await refreshAutoControls();
+      return;
+    }
+
     extractedPage = await clipper.extractContentFromTab(tab.id, tab);
     titleInput.value = extractedPage.title;
     contentPreview.textContent = previewText(extractedPage);
@@ -127,6 +146,10 @@ async function sendClip() {
 
   try {
     settings = await clipper.getSettings();
+    if (clipper.isBlacklistedUrl(pageUrl, settings)) {
+      throw new Error("This page matches the blacklist");
+    }
+
     const sessionTag = sessionTagInput.value.trim();
     settings = { ...settings, sessionTag };
     await clipper.saveSettings({
@@ -160,7 +183,21 @@ async function refreshAutoControls() {
   if (!currentOrigin || !clipper.isClippableUrl(pageUrl)) {
     autoClipSite.disabled = true;
     autoClipSite.checked = false;
+    allowSiteBtn.disabled = true;
+    blockSiteBtn.disabled = true;
     autoClipHint.textContent = "Auto-clip is available on regular web pages.";
+    return;
+  }
+
+  const isBlocked = clipper.isBlacklistedUrl(pageUrl, settings);
+  const isAllowed = clipper.matchesAnyPattern(pageUrl, settings.whitelist);
+  allowSiteBtn.disabled = !currentHostname() || isAllowed || isBlocked;
+  blockSiteBtn.disabled = !currentHostname() || isBlocked;
+
+  if (isBlocked) {
+    autoClipSite.disabled = true;
+    autoClipSite.checked = false;
+    autoClipHint.textContent = `${currentHostname()} is blacklisted and will not be clipped.`;
     return;
   }
 
@@ -220,6 +257,50 @@ async function toggleAutoClipForSite() {
   await refreshAutoControls();
 }
 
+async function addCurrentSiteToWhitelist() {
+  const host = currentHostname();
+  if (!host) return;
+
+  settings = await clipper.getSettings();
+  const granted = await clipper.requestOriginPermission(currentOrigin);
+  if (!granted) {
+    autoClipHint.textContent = `Chrome did not grant access to ${host}.`;
+    return;
+  }
+
+  await clipper.saveSettings({
+    autoClipEnabled: true,
+    whitelist: clipper.parsePatternList([...(settings.whitelist || []), host]),
+  });
+  autoClipHint.textContent = `${host} added to whitelist.`;
+  await refreshAutoControls();
+}
+
+async function addCurrentSiteToBlacklist() {
+  const host = currentHostname();
+  if (!host) return;
+
+  settings = await clipper.getSettings();
+  const origins = (settings.autoClipOrigins || []).filter((origin) => origin !== currentOrigin);
+  await clipper.saveSettings({
+    blacklist: clipper.parsePatternList([...(settings.blacklist || []), host]),
+    autoClipOrigins: origins,
+  });
+  extractedPage = null;
+  clipBtn.disabled = true;
+  contentPreview.textContent = "This page matches the blacklist and will not be clipped.";
+  autoClipHint.textContent = `${host} added to blacklist.`;
+  await refreshAutoControls();
+}
+
+function openOptionsPage() {
+  if (chrome.runtime.openOptionsPage) {
+    chrome.runtime.openOptionsPage();
+  } else {
+    chrome.tabs.create({ url: chrome.runtime.getURL("options.html") });
+  }
+}
+
 function resizePreview() {
   const totalHeight = 560;
   const preview = document.getElementById("contentPreview");
@@ -233,6 +314,9 @@ function resizePreview() {
 
 clipBtn.addEventListener("click", sendClip);
 autoClipSite.addEventListener("change", toggleAutoClipForSite);
+allowSiteBtn.addEventListener("click", addCurrentSiteToWhitelist);
+blockSiteBtn.addEventListener("click", addCurrentSiteToBlacklist);
+openOptionsBtn.addEventListener("click", openOptionsPage);
 sessionTagInput.addEventListener("change", async () => {
   await clipper.saveSettings({
     sessionTag: sessionTagInput.value.trim(),

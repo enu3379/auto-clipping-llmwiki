@@ -91,6 +91,29 @@
       color: #6b7280;
       word-break: break-word;
     }
+    .inline-actions {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .mini-btn {
+      min-height: 28px;
+      padding: 5px 6px;
+      border: 1px solid #d1d5db;
+      border-radius: 5px;
+      background: #f9fafb;
+      color: #374151;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .mini-btn:hover { background: #f3f4f6; }
+    .mini-btn:disabled {
+      color: #9ca3af;
+      cursor: not-allowed;
+      background: #f3f4f6;
+    }
     .url-preview {
       padding: 4px 8px;
       background: #f3f4f6;
@@ -173,6 +196,11 @@
         <input type="checkbox" id="autoClipSite" disabled>
       </div>
       <div class="hint" id="autoClipHint">Available after page extraction.</div>
+      <div class="inline-actions">
+        <button class="mini-btn" id="allowSiteBtn" type="button" disabled>Allow Site</button>
+        <button class="mini-btn" id="blockSiteBtn" type="button" disabled>Block Site</button>
+        <button class="mini-btn" id="openOptionsBtn" type="button">Edit Lists</button>
+      </div>
     </div>
 
     <div class="field">

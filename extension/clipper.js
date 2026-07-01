@@ -218,6 +218,92 @@
     return matchesAnyPattern(url, settings?.blacklist || []);
   }
 
+  function parsePatternList(value) {
+    const entries = Array.isArray(value)
+      ? value
+      : String(value || "").split(/\r?\n|,/);
+    const seen = new Set();
+    const patterns = [];
+
+    for (const entry of entries) {
+      const trimmed = String(entry || "").trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      if (seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      patterns.push(trimmed);
+    }
+
+    return patterns;
+  }
+
+  function formatPatternList(patterns) {
+    return parsePatternList(patterns).join("\n");
+  }
+
+  function hostFromPattern(pattern) {
+    const rawPattern = String(pattern || "").trim();
+    if (!rawPattern) return null;
+
+    let scheme = "*";
+    let rest = rawPattern;
+    const schemeMatch = rawPattern.match(/^(\*|https?|file):\/\/(.+)$/i);
+    if (schemeMatch) {
+      scheme = schemeMatch[1].toLowerCase();
+      rest = schemeMatch[2];
+    }
+
+    const host = rest.split("/")[0].trim().toLowerCase();
+    if (!host || host === "*") return null;
+    return { scheme, host };
+  }
+
+  function patternToPermissionPatterns(pattern) {
+    const parsed = hostFromPattern(pattern);
+    if (!parsed) return [];
+
+    const { scheme, host } = parsed;
+    if (host.includes("*") && !host.startsWith("*.")) return [];
+    if (host.startsWith("*.")) {
+      const baseHost = host.slice(2);
+      if (!baseHost || baseHost.includes("*")) return [];
+      return [
+        `${scheme}://${baseHost}/*`,
+        `${scheme}://*.${baseHost}/*`,
+      ];
+    }
+
+    return [`${scheme}://${host}/*`];
+  }
+
+  function patternsToPermissionPatterns(patterns) {
+    const permissionPatterns = [];
+    const unsupported = [];
+
+    for (const pattern of parsePatternList(patterns)) {
+      const converted = patternToPermissionPatterns(pattern);
+      if (converted.length === 0) {
+        unsupported.push(pattern);
+      } else {
+        permissionPatterns.push(...converted);
+      }
+    }
+
+    return {
+      origins: Array.from(new Set(permissionPatterns)),
+      unsupported,
+    };
+  }
+
+  async function requestPatternPermissions(patterns) {
+    const { origins, unsupported } = patternsToPermissionPatterns(patterns);
+    if (origins.length === 0 || !globalThis.chrome?.permissions?.request) {
+      return { granted: origins.length === 0, origins, unsupported };
+    }
+
+    const granted = await chrome.permissions.request({ origins });
+    return { granted, origins, unsupported };
+  }
+
   function originToPermissionPattern(origin) {
     try {
       const parsed = new URL(origin);
@@ -482,6 +568,11 @@
     matchesUrlPattern,
     matchesAnyPattern,
     isBlacklistedUrl,
+    parsePatternList,
+    formatPatternList,
+    patternToPermissionPatterns,
+    patternsToPermissionPatterns,
+    requestPatternPermissions,
     hasOriginPermission,
     requestOriginPermission,
     extractContentFromTab,
