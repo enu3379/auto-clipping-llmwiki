@@ -330,6 +330,7 @@ fn handle_clip(body: &str) -> String {
     let title = parsed["title"].as_str().unwrap_or("Untitled");
     let url = parsed["url"].as_str().unwrap_or("");
     let content = parsed["content"].as_str().unwrap_or("");
+    let allow_duplicate = parsed["allowDuplicate"].as_bool().unwrap_or(false);
 
     // Use projectPath from request body, or fall back to globally-set project path
     let project_path_from_body = parsed["projectPath"].as_str().unwrap_or("").to_string();
@@ -388,6 +389,19 @@ fn handle_clip(body: &str) -> String {
         );
     }
 
+    if !allow_duplicate {
+        if let Some(existing_path) = find_existing_clip_for_url(&project_path, url) {
+            return serde_json::json!({
+                "ok": true,
+                "path": existing_path,
+                "duplicate": true,
+                "skipped": true,
+                "reason": "duplicate_url",
+            })
+            .to_string();
+        }
+    }
+
     // Find unique filename
     let mut file_path = dir_path.join(format!("{}.md", base_name));
     let mut counter = 2u32;
@@ -436,4 +450,244 @@ fn handle_clip(body: &str) -> String {
         "path": relative_path,
     })
     .to_string()
+}
+
+fn find_existing_clip_for_url(project_path: &str, url: &str) -> Option<String> {
+    let normalized_target = normalize_clip_url_for_dedup(url);
+    if normalized_target.is_empty() {
+        return None;
+    }
+
+    let project_root = std::path::Path::new(project_path);
+    let sources_dir = project_root.join("raw").join("sources");
+    if !sources_dir.is_dir() {
+        return None;
+    }
+
+    for entry in walkdir::WalkDir::new(&sources_dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+    {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Some(existing_url) = frontmatter_url(&content) else {
+            continue;
+        };
+
+        if normalize_clip_url_for_dedup(&existing_url) == normalized_target {
+            return Some(
+                path.strip_prefix(project_root)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/")),
+            );
+        }
+    }
+
+    None
+}
+
+fn frontmatter_url(content: &str) -> Option<String> {
+    let mut lines = content.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            break;
+        }
+
+        let Some(raw_value) = trimmed.strip_prefix("url:") else {
+            continue;
+        };
+        return Some(unquote_frontmatter_value(raw_value.trim()));
+    }
+
+    None
+}
+
+fn unquote_frontmatter_value(value: &str) -> String {
+    if value.starts_with('"') {
+        if let Ok(parsed) = serde_json::from_str::<String>(value) {
+            return parsed;
+        }
+    }
+
+    if value.len() >= 2 && value.starts_with('\'') && value.ends_with('\'') {
+        return value[1..value.len() - 1].replace("''", "'");
+    }
+
+    value.to_string()
+}
+
+fn normalize_clip_url_for_dedup(url: &str) -> String {
+    let without_hash = url.trim().split('#').next().unwrap_or("").trim();
+    if without_hash.is_empty() {
+        return String::new();
+    }
+
+    let Some((scheme, rest)) = without_hash.split_once("://") else {
+        return strip_tracking_query(without_hash);
+    };
+
+    let host_end = rest.find(|c| c == '/' || c == '?').unwrap_or(rest.len());
+    let host = rest[..host_end].to_lowercase();
+    let tail = &rest[host_end..];
+    let normalized_tail = strip_tracking_query(tail);
+    format!("{}://{}{}", scheme.to_lowercase(), host, normalized_tail)
+}
+
+fn strip_tracking_query(value: &str) -> String {
+    let (path, query) = match value.split_once('?') {
+        Some(parts) => parts,
+        None => return strip_trailing_path_slash(value).to_string(),
+    };
+
+    let filtered: Vec<&str> = query
+        .split('&')
+        .filter(|part| {
+            let key = part.split('=').next().unwrap_or("").to_lowercase();
+            !key.starts_with("utm_")
+                && !matches!(
+                    key.as_str(),
+                    "fbclid" | "gclid" | "mc_cid" | "mc_eid" | "msclkid" | "igshid"
+                )
+        })
+        .collect();
+
+    let normalized_path = strip_trailing_path_slash(path);
+    if filtered.is_empty() {
+        normalized_path.to_string()
+    } else {
+        format!("{}?{}", normalized_path, filtered.join("&"))
+    }
+}
+
+fn strip_trailing_path_slash(path: &str) -> &str {
+    if path.len() > 1 {
+        path.trim_end_matches('/')
+    } else {
+        path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    struct TempProject {
+        root: std::path::PathBuf,
+    }
+
+    impl TempProject {
+        fn new() -> Self {
+            let root =
+                std::env::temp_dir().join(format!("llm-wiki-clip-test-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(root.join("raw/sources/nested")).unwrap();
+            Self { root }
+        }
+
+        fn path(&self) -> String {
+            self.root.to_string_lossy().replace('\\', "/")
+        }
+    }
+
+    impl Drop for TempProject {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn normalize_clip_url_removes_hash_tracking_and_trailing_slash() {
+        assert_eq!(
+            normalize_clip_url_for_dedup("HTTPS://GitHub.com/Mirix-AI/MIRIX/?utm_source=x#readme"),
+            "https://github.com/Mirix-AI/MIRIX"
+        );
+        assert_eq!(
+            normalize_clip_url_for_dedup("https://example.com/a?x=1&utm_medium=y&gclid=z"),
+            "https://example.com/a?x=1"
+        );
+    }
+
+    #[test]
+    fn frontmatter_url_reads_json_quoted_url() {
+        let content = "---\ntype: clip\nurl: \"https://example.com/a?x=1\"\n---\nbody";
+        assert_eq!(
+            frontmatter_url(content).as_deref(),
+            Some("https://example.com/a?x=1")
+        );
+    }
+
+    #[test]
+    fn handle_clip_skips_existing_url_without_writing_duplicate() {
+        let project = TempProject::new();
+        let existing = project.root.join("raw/sources/nested/existing.md");
+        fs::write(
+            &existing,
+            "---\ntype: clip\nurl: \"https://github.com/Mirix-AI/MIRIX\"\n---\nold",
+        )
+        .unwrap();
+
+        let body = serde_json::json!({
+            "title": "Mirix AI MIRIX",
+            "url": "https://github.com/Mirix-AI/MIRIX/?utm_source=chat#readme",
+            "content": "new content",
+            "projectPath": project.path(),
+        })
+        .to_string();
+        let response: serde_json::Value = serde_json::from_str(&handle_clip(&body)).unwrap();
+
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["duplicate"], true);
+        assert_eq!(response["reason"], "duplicate_url");
+        assert_eq!(response["path"], "raw/sources/nested/existing.md");
+
+        let source_count = walkdir::WalkDir::new(project.root.join("raw/sources"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .count();
+        assert_eq!(source_count, 1);
+    }
+
+    #[test]
+    fn handle_clip_allows_duplicate_when_requested() {
+        let project = TempProject::new();
+        fs::write(
+            project.root.join("raw/sources/existing.md"),
+            "---\ntype: clip\nurl: \"https://example.com/a\"\n---\nold",
+        )
+        .unwrap();
+
+        let body = serde_json::json!({
+            "title": "Example A",
+            "url": "https://example.com/a",
+            "content": "new content",
+            "projectPath": project.path(),
+            "allowDuplicate": true,
+        })
+        .to_string();
+        let response: serde_json::Value = serde_json::from_str(&handle_clip(&body)).unwrap();
+
+        assert_eq!(response["ok"], true);
+        assert!(response["duplicate"].is_null());
+
+        let source_count = walkdir::WalkDir::new(project.root.join("raw/sources"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .count();
+        assert_eq!(source_count, 2);
+    }
 }

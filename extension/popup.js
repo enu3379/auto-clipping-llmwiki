@@ -177,8 +177,13 @@ async function sendClip() {
       projectPath,
     }, settings);
 
-    setStatus("success", `Saved to ${selectedProjectName()}`);
-    clipBtn.textContent = "Clipped";
+    if (data.duplicate) {
+      setStatus("success", `Already saved in ${selectedProjectName()}`);
+      clipBtn.textContent = "Already clipped";
+    } else {
+      setStatus("success", `Saved to ${selectedProjectName()}`);
+      clipBtn.textContent = "Clipped";
+    }
     return data;
   } catch (err) {
     setStatus("error", `Error: ${err.message}`);

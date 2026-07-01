@@ -98,7 +98,11 @@ async function clipTabWithFeedback(tab, options = {}) {
     }
 
     const result = await LlmWikiClipper.clipTab(tab, options);
-    setBadge(tab.id, "OK", "#16a34a");
+    if (result?.duplicate) {
+      setBadge(tab.id, "DUP", "#64748b");
+    } else {
+      setBadge(tab.id, "OK", "#16a34a");
+    }
     return { ok: true, result };
   } catch (err) {
     console.error("[LLM Wiki Clipper] Clip failed:", err);
