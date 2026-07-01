@@ -296,6 +296,10 @@ function isKimiEndpoint(config: LlmConfig): boolean {
     || /api\.moonshot\.(ai|cn)/i.test(config.customEndpoint)
 }
 
+function isBillingAiEndpoint(config: LlmConfig): boolean {
+  return /(?:^|\/\/)billing-ai\.doublezero\.kr(?:[:/]|$)/i.test(config.customEndpoint)
+}
+
 function isXiaomiMimoEndpoint(config: LlmConfig): boolean {
   return /(^|[/:.-])mimo([/:.-]|$)/i.test(config.model)
     || /\.?xiaomimimo\.com(?::|\/|$)/i.test(config.customEndpoint)
@@ -354,6 +358,32 @@ function adaptKimiBody(config: LlmConfig, body: Record<string, unknown>): void {
   delete body.temperature
 }
 
+function adaptBillingAiBody(
+  config: LlmConfig,
+  body: Record<string, unknown>,
+  reasoning: ReasoningConfig,
+): void {
+  if (!isBillingAiEndpoint(config)) return
+
+  // Billing AI exposes multi-vendor models through an OpenAI-compatible
+  // gateway. Several current flagship ids (claude-opus-4-8, gpt-5-5)
+  // reject explicit temperature even though older ids accept it, so omit
+  // caller-provided deterministic sampling knobs for this gateway.
+  delete body.temperature
+
+  // Smoke-tested against Billing AI: low/medium/high/max are accepted.
+  // Their API also accepts "xhigh", but LLM Wiki's global reasoning UI
+  // does not currently expose that provider-specific level.
+  if (
+    reasoning.mode === "low" ||
+    reasoning.mode === "medium" ||
+    reasoning.mode === "high" ||
+    reasoning.mode === "max"
+  ) {
+    body.reasoning_effort = reasoning.mode
+  }
+}
+
 function adaptXiaomiMimoBody(
   config: LlmConfig,
   body: Record<string, unknown>,
@@ -393,7 +423,10 @@ function buildOpenAiCompatibleBody(
   const body: Record<string, unknown> = buildOpenAiBody(messages, stripWireAgnosticOverrides(overrides))
   adaptOpenAiStrictCompletionBody(config, body)
   adaptKimiBody(config, body)
+  adaptBillingAiBody(config, body, reasoning)
   adaptXiaomiMimoBody(config, body, reasoning)
+
+  if (isBillingAiEndpoint(config)) return body
 
   if (isDeepSeekEndpoint(config)) {
     // DeepSeek V4 thinking mode. `thinking.type=disabled` is the most

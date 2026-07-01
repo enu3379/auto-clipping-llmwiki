@@ -726,6 +726,54 @@ describe("reasoning controls", () => {
     expect(body.max_tokens).toBe(4096)
   })
 
+  it("strips temperature for Billing AI flagship models that reject explicit sampling", () => {
+    const cfg = mkConfig({
+      provider: "custom",
+      model: "claude-opus-4-8",
+      customEndpoint: "https://billing-ai.doublezero.kr/api/v1",
+      apiMode: "chat_completions",
+    })
+    const body = getProviderConfig(cfg).buildBody(
+      [{ role: "user", content: "hi" }],
+      { temperature: 0.1, max_tokens: 4096 },
+    ) as Record<string, unknown>
+
+    expect(body.temperature).toBeUndefined()
+    expect(body.max_tokens).toBe(4096)
+  })
+
+  it("maps Billing AI reasoning modes through reasoning_effort up to max", () => {
+    const cfg = mkConfig({
+      provider: "custom",
+      model: "gpt-5-5",
+      customEndpoint: "https://billing-ai.doublezero.kr/api/v1",
+      apiMode: "chat_completions",
+    })
+
+    for (const mode of ["low", "medium", "high", "max"] as const) {
+      const body = getProviderConfig(cfg).buildBody(
+        [{ role: "user", content: "hi" }],
+        { reasoning: { mode } },
+      ) as Record<string, unknown>
+      expect(body.reasoning_effort).toBe(mode)
+    }
+  })
+
+  it("does not send local Qwen chat-template flags to Billing AI", () => {
+    const cfg = mkConfig({
+      provider: "custom",
+      model: "qwen3-max",
+      customEndpoint: "https://billing-ai.doublezero.kr/api/v1",
+      apiMode: "chat_completions",
+    })
+    const body = getProviderConfig(cfg).buildBody(
+      [{ role: "user", content: "hi" }],
+      { reasoning: { mode: "off" } },
+    ) as Record<string, unknown>
+
+    expect(body.chat_template_kwargs).toBeUndefined()
+  })
+
   it("maps Anthropic reasoning budget to extended thinking and removes sampling knobs", () => {
     const cfg = mkConfig({ provider: "anthropic", model: "claude-sonnet-4-5-20250929" })
     const body = getProviderConfig(cfg).buildBody(

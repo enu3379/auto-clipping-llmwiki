@@ -214,6 +214,37 @@ export const LLM_PRESETS: LlmPreset[] = [
     suggestedContextSize: 128000,
   },
   {
+    id: "billing-ai",
+    label: "Billing AI",
+    hint: "billing-ai.doublezero.kr",
+    provider: "custom",
+    baseUrl: "https://billing-ai.doublezero.kr/api/v1",
+    defaultModel: "claude-opus-4-8",
+    apiMode: "chat_completions",
+    // Billing AI exposes a rotating multi-vendor catalog behind one
+    // OpenAI-compatible Chat Completions endpoint. Keep this to ids returned
+    // by /api/v1/models; users can still type any newly enabled alias.
+    suggestedModels: [
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+      "claude-opus-4-6",
+      "claude-opus-4-5",
+      "claude-sonnet-4-6",
+      "claude-sonnet-4-5",
+      "claude-haiku-4-5",
+      "gpt-5-5",
+      "gpt-5-4",
+      "gpt-5-2",
+      "gpt-5-1",
+      "gemini-3-1-pro",
+      "gemini-3-5-flash",
+      "qwen3-max",
+      "qwen3-plus",
+      "qwen3-vl-plus",
+    ],
+    suggestedContextSize: 1000000,
+  },
+  {
     id: "groq",
     label: "Groq",
     hint: "api.groq.com",

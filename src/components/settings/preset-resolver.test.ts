@@ -41,6 +41,17 @@ describe("resolveConfig", () => {
     expect(atlas?.suggestedModels).toContain("deepseek-ai/deepseek-v4-pro")
   })
 
+  it("exposes Billing AI as an OpenAI-compatible chat-completions preset", () => {
+    const billingAi = LLM_PRESETS.find((preset) => preset.id === "billing-ai")
+
+    expect(billingAi?.provider).toBe("custom")
+    expect(billingAi?.baseUrl).toBe("https://billing-ai.doublezero.kr/api/v1")
+    expect(billingAi?.apiMode).toBe("chat_completions")
+    expect(billingAi?.defaultModel).toBe("claude-opus-4-8")
+    expect(billingAi?.suggestedModels).toContain("gpt-5-5")
+    expect(billingAi?.suggestedContextSize).toBe(1000000)
+  })
+
   it("keeps Xiaomi MiMo presets aligned with current official and Token Plan endpoints", () => {
     const mimo = LLM_PRESETS.find((preset) => preset.id === "xiaomi-mimo")
 
