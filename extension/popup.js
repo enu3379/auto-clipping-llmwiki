@@ -19,6 +19,7 @@ let currentOrigin = "";
 let currentTab = null;
 let settings = null;
 let isConnected = false;
+let currentAiProvenance = null;
 
 function setStatus(type, text) {
   statusBar.className = `status ${type}`;
@@ -38,6 +39,14 @@ function currentHostname() {
     return new URL(pageUrl).hostname;
   } catch {
     return "";
+  }
+}
+
+function hostnameFromUrl(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "AI chat";
   }
 }
 
@@ -158,7 +167,8 @@ async function sendClip() {
       sessionStartedAt: sessionTag ? settings.sessionStartedAt || Date.now() : null,
     });
     const clipContent = clipper.withClipMetadata(extractedPage.content, settings, {
-      source: "popup",
+      source: currentAiProvenance ? "ai-source" : "popup",
+      provenance: currentAiProvenance,
     });
     const data = await clipper.sendClip({
       title: titleInput.value.trim() || extractedPage.title,
@@ -179,6 +189,7 @@ async function sendClip() {
 async function refreshAutoControls() {
   settings = await clipper.getSettings();
   const projectPath = selectedProjectPath();
+  currentAiProvenance = await getCurrentAiProvenance();
 
   if (!currentOrigin || !clipper.isClippableUrl(pageUrl)) {
     autoClipSite.disabled = true;
@@ -215,10 +226,21 @@ async function refreshAutoControls() {
 
   if (autoClipSite.checked) {
     autoClipHint.textContent = `Future pages on ${currentOrigin} will be clipped to ${selectedProjectName()}.`;
+  } else if (currentAiProvenance && settings.aiSourceMode === "recommend") {
+    autoClipHint.textContent = `Recommended: this page was opened from ${hostnameFromUrl(currentAiProvenance.sourceUrl)}.`;
   } else if (originEnabled && !hasPermission) {
     autoClipHint.textContent = `Permission is missing for ${currentOrigin}. Re-enable auto-clip to grant it.`;
   } else {
     autoClipHint.textContent = `Enable to clip future pages on ${currentOrigin} automatically.`;
+  }
+}
+
+async function getCurrentAiProvenance() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "llm-wiki-get-ai-provenance" });
+    return response?.provenance || null;
+  } catch {
+    return null;
   }
 }
 

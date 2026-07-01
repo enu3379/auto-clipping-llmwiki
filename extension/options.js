@@ -3,6 +3,9 @@ const blacklistInput = document.getElementById("blacklistInput");
 const whitelistDwellInput = document.getElementById("whitelistDwellInput");
 const dwellInput = document.getElementById("dwellInput");
 const minContentInput = document.getElementById("minContentInput");
+const aiModeInput = document.getElementById("aiModeInput");
+const aiDwellInput = document.getElementById("aiDwellInput");
+const aiOriginsInput = document.getElementById("aiOriginsInput");
 const saveBtn = document.getElementById("saveBtn");
 const reloadBtn = document.getElementById("reloadBtn");
 const statusEl = document.getElementById("status");
@@ -26,6 +29,9 @@ async function loadSettings() {
   whitelistDwellInput.value = String(settings.whitelistDwellMs);
   dwellInput.value = String(settings.dwellMs);
   minContentInput.value = String(settings.minContentLength);
+  aiModeInput.value = settings.aiSourceMode || "recommend";
+  aiDwellInput.value = String(settings.aiSourceDwellMs);
+  aiOriginsInput.value = clipper.formatPatternList(settings.aiOriginDomains);
   setStatus("", "");
 }
 
@@ -37,11 +43,17 @@ async function saveSettings() {
     const current = await clipper.getSettings();
     const whitelist = clipper.parsePatternList(whitelistInput.value);
     const blacklist = clipper.parsePatternList(blacklistInput.value);
+    const aiOriginDomains = clipper.parsePatternList(aiOriginsInput.value);
+    const aiSourceMode = aiModeInput.value || "recommend";
 
     const permissionResult = await clipper.requestPatternPermissions(whitelist);
     if (!permissionResult.granted && permissionResult.origins.length > 0) {
       setStatus("warn", "Saved lists, but Chrome did not grant all whitelist permissions. Those sites will not auto-clip until permission is granted.");
     }
+
+    const aiAutoPermissionGranted = aiSourceMode === "auto"
+      ? await clipper.requestAllUrlsPermission()
+      : true;
 
     await clipper.saveSettings({
       whitelist,
@@ -49,11 +61,16 @@ async function saveSettings() {
       whitelistDwellMs: numberValue(whitelistDwellInput, current.whitelistDwellMs),
       dwellMs: numberValue(dwellInput, current.dwellMs),
       minContentLength: numberValue(minContentInput, current.minContentLength),
-      autoClipEnabled: current.autoClipEnabled || whitelist.length > 0,
+      aiOriginDomains,
+      aiSourceMode,
+      aiSourceDwellMs: numberValue(aiDwellInput, current.aiSourceDwellMs),
+      autoClipEnabled: current.autoClipEnabled || whitelist.length > 0 || aiSourceMode === "auto",
     });
 
     const unsupported = permissionResult.unsupported || [];
-    if (unsupported.length > 0) {
+    if (aiSourceMode === "auto" && !aiAutoPermissionGranted) {
+      setStatus("warn", "Saved. AI source auto mode is enabled, but Chrome did not grant full site access; AI links will fall back to recommendation badges.");
+    } else if (unsupported.length > 0) {
       setStatus("warn", `Saved. Some wildcard patterns need manual site permission before they can auto-clip: ${unsupported.join(", ")}`);
     } else if (permissionResult.granted || permissionResult.origins.length === 0) {
       setStatus("ok", "Settings saved.");

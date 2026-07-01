@@ -53,7 +53,7 @@
       font-weight: 700;
       text-transform: uppercase;
     }
-    textarea, input {
+    textarea, input, select {
       width: 100%;
       border: 1px solid #cbd5e1;
       border-radius: 6px;
@@ -70,10 +70,10 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 12px;
     }
-    input {
+    input, select {
       padding: 8px 10px;
     }
-    textarea:focus, input:focus {
+    textarea:focus, input:focus, select:focus {
       border-color: #4f46e5;
       box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
     }
@@ -173,6 +173,29 @@
           <label for="minContentInput">Min content chars</label>
           <input id="minContentInput" type="number" min="0" step="50">
         </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:16px">
+      <h2>AI Source Recommendations</h2>
+      <div class="row">
+        <div>
+          <label for="aiModeInput">Mode</label>
+          <select id="aiModeInput">
+            <option value="recommend">Recommend</option>
+            <option value="auto">Auto clip</option>
+            <option value="off">Off</option>
+          </select>
+        </div>
+        <div>
+          <label for="aiDwellInput">AI source dwell ms</label>
+          <input id="aiDwellInput" type="number" min="0" step="100">
+        </div>
+      </div>
+      <div style="margin-top:14px">
+        <label for="aiOriginsInput">AI origin domains</label>
+        <textarea id="aiOriginsInput" spellcheck="false" placeholder="chatgpt.com&#10;claude.ai&#10;gemini.google.com"></textarea>
+        <div class="examples">AI 채팅 출발지 목록입니다. recommend 모드는 목적지 권한 없이 뱃지만 표시합니다. auto 모드는 목적지 자동 추출을 위해 Chrome의 전체 사이트 권한이 필요할 수 있습니다.</div>
       </div>
     </section>
 

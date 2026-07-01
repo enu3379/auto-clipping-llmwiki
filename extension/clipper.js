@@ -304,6 +304,16 @@
     return { granted, origins, unsupported };
   }
 
+  async function hasAllUrlsPermission() {
+    if (!globalThis.chrome?.permissions?.contains) return false;
+    return chrome.permissions.contains({ origins: ["<all_urls>"] });
+  }
+
+  async function requestAllUrlsPermission() {
+    if (!globalThis.chrome?.permissions?.request) return false;
+    return chrome.permissions.request({ origins: ["<all_urls>"] });
+  }
+
   function originToPermissionPattern(origin) {
     try {
       const parsed = new URL(origin);
@@ -573,6 +583,8 @@
     patternToPermissionPatterns,
     patternsToPermissionPatterns,
     requestPatternPermissions,
+    hasAllUrlsPermission,
+    requestAllUrlsPermission,
     hasOriginPermission,
     requestOriginPermission,
     extractContentFromTab,

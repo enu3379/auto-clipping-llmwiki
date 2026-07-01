@@ -50,6 +50,46 @@ async function patchManifest(testExtensionDir, origin) {
 function startTestServer() {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
+      if (req.url === "/ai-source") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(`<!doctype html>
+<html>
+  <head>
+    <title>Fake AI Chat Source</title>
+  </head>
+  <body>
+    <main>
+      <h1>Fake AI Chat Source</h1>
+      <p>This page simulates an AI chat response that links to an external source.</p>
+      <a id="ai-link" target="_blank" href="/ai-article">Open AI cited source</a>
+    </main>
+  </body>
+</html>`);
+        return;
+      }
+
+      if (req.url === "/ai-article") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(`<!doctype html>
+<html>
+  <head>
+    <title>LLM Wiki AI Source Smoke Article</title>
+    <meta name="description" content="A deterministic article opened from a fake AI source page.">
+  </head>
+  <body>
+    <main>
+      <article>
+        <h1>LLM Wiki AI Source Smoke Article</h1>
+        <p>This article verifies that AI-origin provenance can promote a non-whitelisted destination into an auto-clip candidate.</p>
+        <p>The extension should record clip_trigger as ai-source after the destination page remains visible for the AI dwell threshold.</p>
+        <p>Expected result: this page is clipped even though the whitelist is empty.</p>
+      </article>
+    </main>
+  </body>
+</html>`);
+        return;
+      }
+
       if (req.url === "/article" || req.url === "/blocked") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         res.end(`<!doctype html>
@@ -185,9 +225,45 @@ async function main() {
     assert(content.includes('clip_trigger: "whitelist"'), "Clip file did not include clip trigger metadata");
     assert(content.includes('tags: ["smoke-test"]'), "Clip file did not include session tag metadata");
 
+    const beforeAiSource = Date.now();
+    await serviceWorker.evaluate(async ({ projectPath }) => {
+      await chrome.storage.local.set({
+        apiUrl: "http://127.0.0.1:19827",
+        defaultProjectPath: projectPath,
+        autoClipEnabled: true,
+        autoClipOrigins: [],
+        whitelist: [],
+        blacklist: [],
+        aiSourceMode: "auto",
+        aiOriginDomains: ["127.0.0.1/ai-source"],
+        aiSourceDwellMs: 250,
+        dwellMs: 60000,
+        minContentLength: 50,
+        autoClipHistory: {},
+      });
+    }, { projectPath });
+
+    const aiSourcePage = await context.newPage();
+    await aiSourcePage.goto(`${testServer.origin}/ai-source`, { waitUntil: "domcontentloaded" });
+    const [aiTargetPage] = await Promise.all([
+      context.waitForEvent("page"),
+      aiSourcePage.click("#ai-link"),
+    ]);
+    await aiTargetPage.waitForLoadState("domcontentloaded");
+    await aiTargetPage.bringToFront();
+
+    const aiClipFile = await waitForClip(beforeAiSource);
+    assert(aiClipFile, "Timed out waiting for AI-source auto-clipped Markdown file");
+
+    const aiContent = await fs.readFile(aiClipFile, "utf8");
+    assert(aiContent.includes("LLM Wiki AI Source Smoke Article"), "AI-source clip did not contain article title");
+    assert(aiContent.includes('clip_trigger: "ai-source"'), "AI-source clip did not include ai-source trigger metadata");
+    assert(aiContent.includes('clip_provenance: "ai-source"'), "AI-source clip did not include provenance metadata");
+
     console.log(JSON.stringify({
       ok: true,
       clipFile,
+      aiClipFile,
       projectPath,
       testUrl: testServer.url,
     }, null, 2));

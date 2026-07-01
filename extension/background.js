@@ -1,7 +1,10 @@
 importScripts("clipper.js");
 
 const MENU_CLIP_PAGE = "llm-wiki-clip-page";
+const AI_PROVENANCE_PREFIX = "llm-wiki-ai-provenance:";
 const pendingDwell = new Map();
+const aiProvenanceByTab = new Map();
+const tabCommittedUrls = new Map();
 
 function dwellKey(tabId, normalizedUrl) {
   return `${tabId}:${normalizedUrl}`;
@@ -14,6 +17,70 @@ function setBadge(tabId, text, color, timeoutMs = 2500) {
   if (timeoutMs > 0) {
     setTimeout(() => chrome.action.setBadgeText({ tabId, text: "" }), timeoutMs);
   }
+}
+
+function clearBadge(tabId) {
+  if (!tabId) return;
+  chrome.action.setBadgeText({ tabId, text: "" });
+}
+
+function provenanceKey(tabId) {
+  return `${AI_PROVENANCE_PREFIX}${tabId}`;
+}
+
+function isAiOriginUrl(url, settings) {
+  return LlmWikiClipper.isClippableUrl(url || "")
+    && LlmWikiClipper.matchesAnyPattern(url, settings.aiOriginDomains);
+}
+
+function buildAiProvenance(sourceUrl, method) {
+  return {
+    type: "ai-source",
+    sourceUrl,
+    method,
+    ts: Date.now(),
+  };
+}
+
+async function storeAiProvenance(tabId, provenance) {
+  if (!tabId || !provenance) return;
+  aiProvenanceByTab.set(tabId, provenance);
+  if (chrome.storage?.session) {
+    await chrome.storage.session.set({ [provenanceKey(tabId)]: provenance });
+  }
+}
+
+async function getAiProvenance(tabId) {
+  if (!tabId) return null;
+  if (aiProvenanceByTab.has(tabId)) return aiProvenanceByTab.get(tabId);
+
+  if (chrome.storage?.session) {
+    const stored = await chrome.storage.session.get(provenanceKey(tabId));
+    const provenance = stored[provenanceKey(tabId)] || null;
+    if (provenance) aiProvenanceByTab.set(tabId, provenance);
+    return provenance;
+  }
+
+  return null;
+}
+
+async function clearAiProvenance(tabId) {
+  if (!tabId) return;
+  aiProvenanceByTab.delete(tabId);
+  if (chrome.storage?.session) {
+    await chrome.storage.session.remove(provenanceKey(tabId));
+  }
+}
+
+function showAiRecommendation(tabId) {
+  setBadge(tabId, "AI", "#7c3aed", 0);
+}
+
+async function hasClipPermission(url) {
+  const origin = LlmWikiClipper.getOrigin(url);
+  if (!origin) return false;
+  return await LlmWikiClipper.hasOriginPermission(origin)
+    || await LlmWikiClipper.hasAllUrlsPermission();
 }
 
 async function clipTabWithFeedback(tab, options = {}) {
@@ -43,7 +110,13 @@ async function clipTabWithFeedback(tab, options = {}) {
 async function clipActiveTab(source) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return { ok: false, error: "No active tab" };
-  return clipTabWithFeedback(tab, { source });
+  const provenance = source === "popup" ? await getAiProvenance(tab.id) : null;
+  const result = await clipTabWithFeedback(tab, {
+    source: provenance ? "ai-source" : source,
+    provenance,
+  });
+  if (result.ok && provenance) await clearAiProvenance(tab.id);
+  return result;
 }
 
 function getDwellMs(settings, trigger) {
@@ -104,15 +177,35 @@ async function maybeAutoClip(tabId, tab) {
   if (!settings.autoClipEnabled) return;
 
   const normalizedUrl = LlmWikiClipper.normalizeUrl(tab.url);
-  if (await LlmWikiClipper.wasAutoClippedRecently(normalizedUrl, settings)) return;
-  if (LlmWikiClipper.isBlacklistedUrl(tab.url, settings)) return;
+  const provenance = await getAiProvenance(tabId);
+  const aiCandidate = provenance
+    && settings.aiSourceMode !== "off"
+    && !isAiOriginUrl(tab.url, settings);
 
-  const origin = LlmWikiClipper.getOrigin(tab.url);
-  if (!origin || !await LlmWikiClipper.hasOriginPermission(origin)) return;
+  if (await LlmWikiClipper.wasAutoClippedRecently(normalizedUrl, settings)) return;
+  if (LlmWikiClipper.isBlacklistedUrl(tab.url, settings)) {
+    clearBadge(tabId);
+    return;
+  }
+
+  if (aiCandidate && settings.aiSourceMode === "recommend") {
+    showAiRecommendation(tabId);
+    return;
+  }
 
   const trigger = getTrigger(settings, tab.url);
+  const autoTrigger = aiCandidate && settings.aiSourceMode === "auto"
+    ? "ai-source"
+    : trigger;
+
+  if (!await hasClipPermission(tab.url)) {
+    if (aiCandidate) showAiRecommendation(tabId);
+    return;
+  }
+
   try {
-    await scheduleDwellClip(tabId, tab, settings, trigger, null);
+    if (!aiCandidate) clearBadge(tabId);
+    await scheduleDwellClip(tabId, tab, settings, autoTrigger, aiCandidate ? provenance : null);
   } catch (err) {
     console.debug("[LLM Wiki Clipper] Could not schedule dwell clip:", err);
   }
@@ -141,11 +234,34 @@ async function handleDwellMet(message, sender) {
   }
 
   pendingDwell.delete(key);
-  return clipTabWithFeedback(tab, {
+  const result = await clipTabWithFeedback(tab, {
     source: pending.trigger,
     provenance: pending.provenance,
     markAutoHistory: true,
   });
+  if (result.ok && pending.provenance) await clearAiProvenance(tab.id);
+  return result;
+}
+
+async function markAiSourceTab(tabId, sourceUrl, method) {
+  const settings = await LlmWikiClipper.getSettings();
+  if (settings.aiSourceMode === "off") return;
+  if (!isAiOriginUrl(sourceUrl, settings)) return;
+
+  await storeAiProvenance(tabId, buildAiProvenance(sourceUrl, method));
+}
+
+async function detectCommittedNavigation(tabId, url, method) {
+  const settings = await LlmWikiClipper.getSettings();
+  const previousUrl = tabCommittedUrls.get(tabId);
+
+  if (previousUrl && isAiOriginUrl(previousUrl, settings) && !isAiOriginUrl(url, settings)) {
+    await storeAiProvenance(tabId, buildAiProvenance(previousUrl, method));
+  } else if (isAiOriginUrl(url, settings)) {
+    await clearAiProvenance(tabId);
+  }
+
+  tabCommittedUrls.set(tabId, url);
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -178,7 +294,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message?.type === "llm-wiki-url-changed" && sender.tab?.id) {
-    reevaluateTab(sender.tab.id).then(() => sendResponse({ ok: true }));
+    (async () => {
+      if (message.referrer) {
+        await markAiSourceTab(sender.tab.id, message.referrer, "referrer");
+      }
+      await reevaluateTab(sender.tab.id);
+      sendResponse({ ok: true });
+    })();
+    return true;
+  }
+  if (message?.type === "llm-wiki-get-ai-provenance") {
+    (async () => {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      sendResponse({ ok: true, provenance: tab?.id ? await getAiProvenance(tab.id) : null });
+    })();
     return true;
   }
   return false;
@@ -198,7 +327,11 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
 
 chrome.webNavigation?.onHistoryStateUpdated?.addListener((details) => {
   if (details.frameId === 0) {
-    reevaluateTab(details.tabId);
+    detectCommittedNavigation(details.tabId, details.url, "history-state").then(() => {
+      reevaluateTab(details.tabId);
+    }).catch((err) => {
+      console.debug("[LLM Wiki Clipper] AI source history detection failed:", err);
+    });
   }
 });
 
@@ -210,5 +343,33 @@ chrome.webNavigation?.onCommitted?.addListener((details) => {
         pendingDwell.delete(key);
       }
     }
+    detectCommittedNavigation(details.tabId, details.url, "committed").catch((err) => {
+      console.debug("[LLM Wiki Clipper] AI source navigation detection failed:", err);
+    });
   }
+});
+
+chrome.webNavigation?.onCreatedNavigationTarget?.addListener((details) => {
+  if (!details.sourceTabId || !details.tabId) return;
+
+  chrome.tabs.get(details.sourceTabId, async (sourceTab) => {
+    if (chrome.runtime.lastError) return;
+    const sourceUrl = sourceTab?.url || "";
+    if (!sourceUrl) return;
+    try {
+      await markAiSourceTab(details.tabId, sourceUrl, "created-navigation-target");
+    } catch (err) {
+      console.debug("[LLM Wiki Clipper] AI source target detection failed:", err);
+    }
+  });
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  pendingDwell.forEach((_value, key) => {
+    if (key.startsWith(`${tabId}:`)) pendingDwell.delete(key);
+  });
+  tabCommittedUrls.delete(tabId);
+  clearAiProvenance(tabId).catch((err) => {
+    console.debug("[LLM Wiki Clipper] AI source cleanup failed:", err);
+  });
 });
