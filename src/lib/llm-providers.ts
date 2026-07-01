@@ -371,10 +371,12 @@ function adaptBillingAiBody(
   // caller-provided deterministic sampling knobs for this gateway.
   delete body.temperature
 
-  // Smoke-tested against Billing AI: low/medium/high/max are accepted.
+  // Smoke-tested against Billing AI: none/low/medium/high/max are accepted.
   // Their API also accepts "xhigh", but LLM Wiki's global reasoning UI
   // does not currently expose that provider-specific level.
-  if (
+  if (reasoning.mode === "off") {
+    body.reasoning_effort = "none"
+  } else if (
     reasoning.mode === "low" ||
     reasoning.mode === "medium" ||
     reasoning.mode === "high" ||

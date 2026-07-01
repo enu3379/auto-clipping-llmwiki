@@ -56,6 +56,12 @@ const LANGUAGE_METADATA: Record<string, LanguageMetadata> = {
     direction: "ltr",
     scriptFamily: "cjk",
   },
+  KoreanTechnicalEnglish: {
+    promptName: "Korean with English technical terms",
+    htmlLang: "ko",
+    direction: "ltr",
+    scriptFamily: "cjk",
+  },
 }
 
 const DEFAULT_METADATA: LanguageMetadata = {

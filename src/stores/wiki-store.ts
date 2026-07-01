@@ -290,6 +290,7 @@ type OutputLanguage =
   | "Traditional Chinese"
   | "Japanese"
   | "Korean"
+  | "KoreanTechnicalEnglish"
   | "Vietnamese"
   | "French"
   | "German"

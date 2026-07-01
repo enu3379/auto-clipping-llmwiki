@@ -624,4 +624,16 @@ describe("rewriteIngestPathFromTitleForTargetLanguage", () => {
       rewriteIngestPathFromTitleForTargetLanguage("wiki/index.md", content, "Chinese"),
     ).toBe("wiki/index.md")
   })
+
+  it("treats Korean technical-English mode as CJK for generated filenames", () => {
+    const content = "---\ntitle: 혼합 전문가\n---\n# 혼합 전문가"
+
+    expect(
+      rewriteIngestPathFromTitleForTargetLanguage(
+        "wiki/concepts/mixture-of-experts.md",
+        content,
+        "KoreanTechnicalEnglish",
+      ),
+    ).toBe("wiki/concepts/혼합-전문가.md")
+  })
 })

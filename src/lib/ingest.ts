@@ -56,6 +56,39 @@ const REVIEW_STAGE_MIN_SIGNAL_CHARS = 10_000
 const REVIEW_STAGE_MIN_FILE_BLOCKS = 4
 const AGGREGATE_WIKI_PATHS = ["wiki/index.md", "wiki/overview.md", "wiki/log.md"] as const
 
+async function appendIngestDebugLog(
+  projectPath: string,
+  sourceIdentity: string,
+  stage: string,
+  details: Record<string, unknown> = {},
+): Promise<void> {
+  if (!isIngestDebugLogEnabled()) return
+  try {
+    const dir = `${normalizePath(projectPath)}/.llm-wiki`
+    const path = `${dir}/ingest-debug.log`
+    await createDirectory(dir)
+    const existing = await tryReadFile(path)
+    const line = JSON.stringify({
+      at: new Date().toISOString(),
+      sourceIdentity,
+      stage,
+      ...details,
+    })
+    await writeFile(path, `${existing}${existing.endsWith("\n") || !existing ? "" : "\n"}${line}\n`)
+  } catch {
+    // Debug logging must never affect ingest.
+  }
+}
+
+function isIngestDebugLogEnabled(): boolean {
+  if (import.meta.env?.DEV) return true
+  try {
+    return globalThis.localStorage?.getItem("llm-wiki:ingest-debug") === "1"
+  } catch {
+    return false
+  }
+}
+
 function appendSavedImageRefsForCaption(content: string, images: SavedImage[]): string {
   if (images.length === 0) return content
   const refs = images
@@ -637,6 +670,14 @@ async function autoIngestImpl(
   const sourceIdentity = sourceIdentityForPath(pp, sp)
   const sourceSummarySlug = sourceSummarySlugFromIdentity(sourceIdentity)
   const sourceSummaryPath = `wiki/sources/${sourceSummarySlug}.md`
+  const ingestStartedAt = Date.now()
+  await appendIngestDebugLog(pp, sourceIdentity, "start", {
+    fileName,
+    sourcePath: sp,
+    model: llmConfig.model,
+    provider: llmConfig.provider,
+    maxContextSize: llmConfig.maxContextSize,
+  })
   console.log(`[ingest:diag] autoIngestImpl ENTRY for "${fileName}" (project="${pp}", source="${sp}")`)
   const activityId = activity.addItem({
     type: "ingest",
@@ -695,6 +736,14 @@ async function autoIngestImpl(
     tryReadFile(`${pp}/wiki/index.md`),
     tryReadFile(`${pp}/wiki/overview.md`),
   ])
+  await appendIngestDebugLog(pp, sourceIdentity, "source_read", {
+    elapsedMs: Date.now() - ingestStartedAt,
+    sourceChars: sourceContent.length,
+    schemaChars: schema.length,
+    purposeChars: purpose.length,
+    indexChars: index.length,
+    overviewChars: overview.length,
+  })
   if (isPdf && mineruSavedImages.length === 0 && hasMineruImageRefs(sourceContent, sourceSummarySlug)) {
     mineruSavedImages = await savedImagesFromMineruMarkdown(pp, sourceSummarySlug, sourceContent)
     if (mineruSavedImages.length > 0) {
@@ -714,6 +763,11 @@ async function autoIngestImpl(
   // source-summary page on the current pipeline's contract regardless
   // of when the file was first ingested.
   const cachedFiles = await checkIngestCache(pp, sourceIdentity, sourceContent)
+  await appendIngestDebugLog(pp, sourceIdentity, "cache_check", {
+    elapsedMs: Date.now() - ingestStartedAt,
+    hit: cachedFiles !== null,
+    cachedFiles: cachedFiles?.length ?? 0,
+  })
   console.log(`[ingest:diag] cache check for "${sourceIdentity}":`, cachedFiles === null ? "MISS (full pipeline)" : `HIT (${cachedFiles.length} cached files)`)
   if (cachedFiles !== null) {
     try {
@@ -822,6 +876,10 @@ async function autoIngestImpl(
     : await extractAndSaveSourceImages(pp, sp, sourceSummarySlug)
   const markdownImages = await extractAndSaveMarkdownImages(pp, sp, sourceContent, sourceSummarySlug)
   savedImages = [...savedImages, ...markdownImages]
+  await appendIngestDebugLog(pp, sourceIdentity, "images_extracted", {
+    elapsedMs: Date.now() - ingestStartedAt,
+    imageCount: savedImages.length,
+  })
   console.log(`[ingest:diag] full-pipeline branch: got ${savedImages.length} image(s)`)
   if (savedImages.length > 0) {
     console.log(
@@ -962,6 +1020,13 @@ async function autoIngestImpl(
   let analysis = precomputedAnalysis
 
   if (!analysis) {
+    const analysisStartedAt = Date.now()
+    let analysisSawFirstToken = false
+    await appendIngestDebugLog(pp, sourceIdentity, "analysis_start", {
+      elapsedMs: analysisStartedAt - ingestStartedAt,
+      sourceContextChars: sourceContext.length,
+      maxTokens: 4096,
+    })
     await streamChat(
       llmConfig,
       [
@@ -969,7 +1034,16 @@ async function autoIngestImpl(
         { role: "user", content: `Analyze this source document:\n\n**File:** ${sourceIdentity}${folderContext ? `\n**Folder context:** ${folderContext}` : ""}\n\n---\n\n${sourceContext}` },
       ],
       {
-        onToken: (token) => { analysis += token },
+        onToken: (token) => {
+          if (!analysisSawFirstToken) {
+            analysisSawFirstToken = true
+            void appendIngestDebugLog(pp, sourceIdentity, "analysis_first_token", {
+              elapsedMs: Date.now() - ingestStartedAt,
+              msSinceStageStart: Date.now() - analysisStartedAt,
+            })
+          }
+          analysis += token
+        },
         onDone: () => {},
         onError: (err) => {
           activity.updateItem(activityId, { status: "error", detail: `Analysis failed: ${err.message}` })
@@ -978,6 +1052,11 @@ async function autoIngestImpl(
       signal,
       { temperature: 0.1, reasoning: { mode: "off" }, max_tokens: 4096 },
     )
+    await appendIngestDebugLog(pp, sourceIdentity, "analysis_done", {
+      elapsedMs: Date.now() - ingestStartedAt,
+      durationMs: Date.now() - analysisStartedAt,
+      analysisChars: analysis.length,
+    })
   }
 
   // A silent `return []` here would look like success to the queue
@@ -994,6 +1073,20 @@ async function autoIngestImpl(
 
   let generation = ""
 
+  const generationStartedAt = Date.now()
+  let generationSawFirstToken = false
+  const generationMaxTokens = computeIngestGenerationMaxTokensForSource(
+    llmConfig.maxContextSize,
+    sourceContext.length,
+    analysis.length,
+  )
+  const reviewMaxTokens = computeIngestReviewMaxTokensForGeneration(generationMaxTokens)
+  await appendIngestDebugLog(pp, sourceIdentity, "generation_start", {
+    elapsedMs: generationStartedAt - ingestStartedAt,
+    analysisChars: analysis.length,
+    sourceContextChars: sourceContext.length,
+    maxTokens: generationMaxTokens,
+  })
   await streamChat(
     llmConfig,
     [
@@ -1024,7 +1117,16 @@ async function autoIngestImpl(
       },
     ],
     {
-      onToken: (token) => { generation += token },
+      onToken: (token) => {
+        if (!generationSawFirstToken) {
+          generationSawFirstToken = true
+          void appendIngestDebugLog(pp, sourceIdentity, "generation_first_token", {
+            elapsedMs: Date.now() - ingestStartedAt,
+            msSinceStageStart: Date.now() - generationStartedAt,
+          })
+        }
+        generation += token
+      },
       onDone: () => {},
       onError: (err) => {
         activity.updateItem(activityId, { status: "error", detail: `Generation failed: ${err.message}` })
@@ -1034,9 +1136,16 @@ async function autoIngestImpl(
     {
       temperature: 0.1,
       reasoning: { mode: "off" },
-      max_tokens: computeIngestGenerationMaxTokens(llmConfig.maxContextSize),
+      max_tokens: generationMaxTokens,
     },
   )
+  await appendIngestDebugLog(pp, sourceIdentity, "generation_done", {
+    elapsedMs: Date.now() - ingestStartedAt,
+    durationMs: Date.now() - generationStartedAt,
+    generationChars: generation.length,
+    fileBlocks: countFileBlocks(generation),
+    reviewStageEligible: shouldRunDedicatedReviewStage(generation),
+  })
 
   const generationActivity = useActivityStore.getState().items.find((i) => i.id === activityId)
   if (generationActivity?.status === "error") {
@@ -1045,8 +1154,16 @@ async function autoIngestImpl(
   throwIfIngestAborted(signal, activityId)
 
   let reviewSuggestionOutput = ""
-  if (!signal?.aborted && shouldRunDedicatedReviewStage(generation)) {
+  const runDedicatedReviewStage = !signal?.aborted && shouldRunDedicatedReviewStage(generation)
+  await appendIngestDebugLog(pp, sourceIdentity, runDedicatedReviewStage ? "review_stage_start" : "review_stage_skip", {
+    elapsedMs: Date.now() - ingestStartedAt,
+    generationChars: generation.length,
+    fileBlocks: countFileBlocks(generation),
+  })
+  if (runDedicatedReviewStage) {
     let reviewStageHadError = false
+    const reviewStartedAt = Date.now()
+    let reviewSawFirstToken = false
     try {
       await streamChat(
         llmConfig,
@@ -1069,7 +1186,16 @@ async function autoIngestImpl(
           },
         ],
         {
-          onToken: (token) => { reviewSuggestionOutput += token },
+          onToken: (token) => {
+            if (!reviewSawFirstToken) {
+              reviewSawFirstToken = true
+              void appendIngestDebugLog(pp, sourceIdentity, "review_stage_first_token", {
+                elapsedMs: Date.now() - ingestStartedAt,
+                msSinceStageStart: Date.now() - reviewStartedAt,
+              })
+            }
+            reviewSuggestionOutput += token
+          },
           onDone: () => {},
           onError: (err) => {
             reviewStageHadError = true
@@ -1080,7 +1206,7 @@ async function autoIngestImpl(
         {
           temperature: 0.1,
           reasoning: { mode: "off" },
-          max_tokens: computeIngestReviewMaxTokens(llmConfig.maxContextSize),
+          max_tokens: reviewMaxTokens,
         },
       )
     } catch (err) {
@@ -1089,11 +1215,22 @@ async function autoIngestImpl(
     }
     throwIfIngestAborted(signal, activityId)
     if (reviewStageHadError) reviewSuggestionOutput = ""
+    await appendIngestDebugLog(pp, sourceIdentity, "review_stage_done", {
+      elapsedMs: Date.now() - ingestStartedAt,
+      durationMs: Date.now() - reviewStartedAt,
+      outputChars: reviewSuggestionOutput.length,
+      hadError: reviewStageHadError,
+    })
   }
 
   // ── Step 3: Write files ───────────────────────────────────────
   throwIfIngestAborted(signal, activityId)
   activity.updateItem(activityId, { detail: "Writing files..." })
+  await appendIngestDebugLog(pp, sourceIdentity, "write_start", {
+    elapsedMs: Date.now() - ingestStartedAt,
+    generationChars: generation.length,
+    reviewOutputChars: reviewSuggestionOutput.length,
+  })
   await migrateLegacySourceSummaryIfSafe(pp, sourceIdentity, sourceSummaryPath)
   const writeResult = await writeFileBlocks(
     pp,
@@ -1109,6 +1246,13 @@ async function autoIngestImpl(
   const writtenPaths = writeResult.writtenPaths
   const writeWarnings = writeResult.warnings
   const hardFailures = writeResult.hardFailures
+  await appendIngestDebugLog(pp, sourceIdentity, "write_done", {
+    elapsedMs: Date.now() - ingestStartedAt,
+    writtenCount: writtenPaths.length,
+    warningCount: writeWarnings.length,
+    hardFailureCount: hardFailures.length,
+    writtenPaths,
+  })
 
   const aggregateRepairPaths = aggregatePathsNeedingRepair(writtenPaths, writeWarnings)
   const repairableAggregatePaths = aggregateRepairPaths.filter((path) =>
@@ -1125,6 +1269,12 @@ async function autoIngestImpl(
   if (repairableAggregatePaths.length > 0 && !signal?.aborted) {
     activity.updateItem(activityId, {
       detail: `Repairing aggregate wiki files: ${repairableAggregatePaths.join(", ")}`,
+    })
+    const aggregateStartedAt = Date.now()
+    let aggregateSawFirstToken = false
+    await appendIngestDebugLog(pp, sourceIdentity, "aggregate_repair_start", {
+      elapsedMs: aggregateStartedAt - ingestStartedAt,
+      paths: repairableAggregatePaths,
     })
     let aggregateRepairOutput = ""
     try {
@@ -1151,7 +1301,16 @@ async function autoIngestImpl(
           },
         ],
         {
-          onToken: (token) => { aggregateRepairOutput += token },
+          onToken: (token) => {
+            if (!aggregateSawFirstToken) {
+              aggregateSawFirstToken = true
+              void appendIngestDebugLog(pp, sourceIdentity, "aggregate_repair_first_token", {
+                elapsedMs: Date.now() - ingestStartedAt,
+                msSinceStageStart: Date.now() - aggregateStartedAt,
+              })
+            }
+            aggregateRepairOutput += token
+          },
           onDone: () => {},
           onError: (err) => {
             writeWarnings.push(`Aggregate repair failed: ${err.message}`)
@@ -1161,7 +1320,7 @@ async function autoIngestImpl(
         {
           temperature: 0.1,
           reasoning: { mode: "off" },
-          max_tokens: computeIngestReviewMaxTokens(llmConfig.maxContextSize),
+          max_tokens: reviewMaxTokens,
         },
       )
       throwIfIngestAborted(signal, activityId)
@@ -1185,11 +1344,23 @@ async function autoIngestImpl(
         writeWarnings.push(...repairResult.warnings)
         hardFailures.push(...repairResult.hardFailures)
       }
+      await appendIngestDebugLog(pp, sourceIdentity, "aggregate_repair_done", {
+        elapsedMs: Date.now() - ingestStartedAt,
+        durationMs: Date.now() - aggregateStartedAt,
+        outputChars: aggregateRepairOutput.length,
+        writtenCount: writtenPaths.length,
+        warningCount: writeWarnings.length,
+      })
     } catch (err) {
       throwIfIngestAborted(signal, activityId)
       writeWarnings.push(
         `Aggregate repair failed: ${err instanceof Error ? err.message : String(err)}`,
       )
+      await appendIngestDebugLog(pp, sourceIdentity, "aggregate_repair_error", {
+        elapsedMs: Date.now() - ingestStartedAt,
+        durationMs: Date.now() - aggregateStartedAt,
+        error: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 
@@ -1254,7 +1425,14 @@ async function autoIngestImpl(
 
   if (writtenPaths.length > 0) {
     try {
+      await appendIngestDebugLog(pp, sourceIdentity, "refresh_tree_start", {
+        elapsedMs: Date.now() - ingestStartedAt,
+        writtenCount: writtenPaths.length,
+      })
       await refreshProjectFileTree(pp, { bumpDataVersion: true })
+      await appendIngestDebugLog(pp, sourceIdentity, "refresh_tree_done", {
+        elapsedMs: Date.now() - ingestStartedAt,
+      })
     } catch {
       // ignore
     }
@@ -1294,6 +1472,11 @@ async function autoIngestImpl(
   const embCfg = useWikiStore.getState().embeddingConfig
   if (embCfg.enabled && embCfg.model && writtenPaths.length > 0) {
     try {
+      await appendIngestDebugLog(pp, sourceIdentity, "embedding_start", {
+        elapsedMs: Date.now() - ingestStartedAt,
+        writtenCount: writtenPaths.length,
+        model: embCfg.model,
+      })
       const { embedPage } = await import("@/lib/embedding")
       for (const wpath of writtenPaths) {
         const pageId = wpath.split("/").pop()?.replace(/\.md$/, "") ?? ""
@@ -1307,6 +1490,9 @@ async function autoIngestImpl(
           // non-critical
         }
       }
+      await appendIngestDebugLog(pp, sourceIdentity, "embedding_done", {
+        elapsedMs: Date.now() - ingestStartedAt,
+      })
     } catch {
       // embedding module not available
     }
@@ -1323,6 +1509,13 @@ async function autoIngestImpl(
     status: writtenPaths.length > 0 ? "done" : "error",
     detail,
     filesWritten: writtenPaths,
+  })
+  await appendIngestDebugLog(pp, sourceIdentity, "done", {
+    elapsedMs: Date.now() - ingestStartedAt,
+    writtenCount: writtenPaths.length,
+    reviewCount: reviewItems.length,
+    warningCount: writeWarnings.length,
+    hardFailureCount: hardFailures.length,
   })
 
   return writtenPaths
@@ -1352,7 +1545,7 @@ function contentMatchesTargetLanguage(content: string, target: string): boolean 
   // Compatible families: CJK targets accept CJK variants; Latin targets
   // accept any Latin family (English may mis-detect as Italian/French for
   // short idiomatic samples — that's fine). Cross-family is the real bug.
-  const cjk = new Set(["Chinese", "Traditional Chinese", "Japanese", "Korean"])
+  const cjk = new Set(["Chinese", "Traditional Chinese", "Japanese", "Korean", "KoreanTechnicalEnglish"])
   const distinctNonLatin = new Set(["Arabic", "Persian", "Hindi", "Thai", "Hebrew"])
   const targetIsCjk = cjk.has(target)
   const detectedIsCjk = cjk.has(detected)
@@ -1375,7 +1568,7 @@ function isListingPath(relativePath: string): boolean {
   )
 }
 
-const CJK_OUTPUT_LANGUAGES = new Set(["Chinese", "Traditional Chinese", "Japanese", "Korean"])
+const CJK_OUTPUT_LANGUAGES = new Set(["Chinese", "Traditional Chinese", "Japanese", "Korean", "KoreanTechnicalEnglish"])
 
 function containsCjk(text: string): boolean {
   return /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/u.test(text)
@@ -2306,8 +2499,25 @@ export function computeIngestGenerationMaxTokens(maxContextSize: number | undefi
   return INGEST_GENERATION_TOKENS_DEFAULT
 }
 
+export function computeIngestGenerationMaxTokensForSource(
+  maxContextSize: number | undefined,
+  sourceContextLength: number,
+  analysisLength: number,
+): number {
+  const base = computeIngestGenerationMaxTokens(maxContextSize)
+  const signalChars = Math.max(0, sourceContextLength) + Math.max(0, analysisLength)
+  if (signalChars <= 20_000) return Math.min(base, INGEST_GENERATION_TOKENS_DEFAULT)
+  if (signalChars <= 80_000) return Math.min(base, INGEST_GENERATION_TOKENS_128K)
+  if (signalChars <= 180_000) return Math.min(base, INGEST_GENERATION_TOKENS_256K)
+  return base
+}
+
+export function computeIngestReviewMaxTokensForGeneration(generationMaxTokens: number): number {
+  return Math.min(8_192, Math.max(4_096, Math.floor(generationMaxTokens / 2)))
+}
+
 export function computeIngestReviewMaxTokens(maxContextSize: number | undefined): number {
-  return Math.min(8_192, Math.max(4_096, Math.floor(computeIngestGenerationMaxTokens(maxContextSize) / 2)))
+  return computeIngestReviewMaxTokensForGeneration(computeIngestGenerationMaxTokens(maxContextSize))
 }
 
 function splitOversizedBlock(block: string, targetChars: number): string[] {

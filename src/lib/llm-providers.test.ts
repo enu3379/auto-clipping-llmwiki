@@ -759,6 +759,23 @@ describe("reasoning controls", () => {
     }
   })
 
+  it("maps Billing AI reasoning off to reasoning_effort none for structured ingest", () => {
+    const cfg = mkConfig({
+      provider: "custom",
+      model: "claude-opus-4-8",
+      customEndpoint: "https://billing-ai.doublezero.kr/api/v1",
+      apiMode: "chat_completions",
+    })
+    const body = getProviderConfig(cfg).buildBody(
+      [{ role: "user", content: "hi" }],
+      { reasoning: { mode: "off" }, temperature: 0.1, max_tokens: 4096 },
+    ) as Record<string, unknown>
+
+    expect(body.reasoning_effort).toBe("none")
+    expect(body.temperature).toBeUndefined()
+    expect(body.max_tokens).toBe(4096)
+  })
+
   it("does not send local Qwen chat-template flags to Billing AI", () => {
     const cfg = mkConfig({
       provider: "custom",

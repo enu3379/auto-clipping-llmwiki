@@ -4,7 +4,9 @@ import {
   buildGenerationPrompt,
   buildPageMergeSystemPrompt,
   computeIngestGenerationMaxTokens,
+  computeIngestGenerationMaxTokensForSource,
   computeIngestReviewMaxTokens,
+  computeIngestReviewMaxTokensForGeneration,
   computeIngestSourceBudget,
   formatIngestWarningLogEntry,
   splitSourceIntoSemanticChunks,
@@ -183,6 +185,17 @@ describe("analysis + generation prompt consistency", () => {
     expect(analysis).toContain("MANDATORY OUTPUT LANGUAGE: Korean")
     expect(generation).toContain("MANDATORY OUTPUT LANGUAGE: Korean")
   })
+
+  it("both stages support Korean explanations with English technical terms", () => {
+    useWikiStore.getState().setOutputLanguage("KoreanTechnicalEnglish")
+    const source = "Mixture of Experts uses routing, capacity factor, and load balancing loss."
+    const analysis = buildAnalysisPrompt("", "", source)
+    const generation = buildGenerationPrompt("", "", "", "moe.md", undefined, source)
+
+    expect(analysis).toContain("MANDATORY OUTPUT LANGUAGE: Korean with English technical terms")
+    expect(generation).toContain("MANDATORY OUTPUT LANGUAGE: Korean with English technical terms")
+    expect(generation).toContain("Preserve standard English technical terminology")
+  })
 })
 
 describe("page merge prompt", () => {
@@ -204,6 +217,14 @@ describe("long-source ingest planning", () => {
     expect(computeIngestGenerationMaxTokens(256_000)).toBe(24_576)
     expect(computeIngestGenerationMaxTokens(1_000_000)).toBe(32_768)
     expect(computeIngestReviewMaxTokens(1_000_000)).toBe(8_192)
+  })
+
+  it("caps generation output tokens for small sources even with a huge context window", () => {
+    expect(computeIngestGenerationMaxTokensForSource(1_000_000, 2_500, 7_500)).toBe(8_192)
+    expect(computeIngestGenerationMaxTokensForSource(1_000_000, 30_000, 20_000)).toBe(16_384)
+    expect(computeIngestGenerationMaxTokensForSource(1_000_000, 90_000, 40_000)).toBe(24_576)
+    expect(computeIngestGenerationMaxTokensForSource(1_000_000, 180_000, 20_001)).toBe(32_768)
+    expect(computeIngestReviewMaxTokensForGeneration(8_192)).toBe(4_096)
   })
 
   it("scales source budget from the configured context window instead of a fixed 50k cap", () => {

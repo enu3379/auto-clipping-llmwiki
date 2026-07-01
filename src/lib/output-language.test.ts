@@ -88,6 +88,18 @@ describe("buildLanguageDirective", () => {
     expect(directive).toContain("use it as evidence")
     expect(directive).toContain("proper nouns and technical identifiers")
   })
+
+  it("supports Korean prose with preserved English technical terms", () => {
+    useWikiStore.getState().setOutputLanguage("KoreanTechnicalEnglish")
+    const directive = buildLanguageDirective("Mixture of Experts routing")
+
+    expect(directive).toContain("MANDATORY OUTPUT LANGUAGE: Korean with English technical terms")
+    expect(directive).toContain("explanations, summaries, section prose")
+    expect(directive).toContain("in **Korean**")
+    expect(directive).toContain("Preserve standard English technical terminology")
+    expect(directive).toContain("Do not machine-translate technical terms")
+    expect(directive).toContain("capacity factor")
+  })
 })
 
 describe("buildLanguageReminder", () => {
@@ -114,5 +126,12 @@ describe("buildLanguageReminder", () => {
   it("reminds Persian as Persian/Farsi", () => {
     useWikiStore.getState().setOutputLanguage("Persian")
     expect(buildLanguageReminder()).toContain("Persian (Farsi / فارسی)")
+  })
+
+  it("reminds the hybrid Korean technical-English policy", () => {
+    useWikiStore.getState().setOutputLanguage("KoreanTechnicalEnglish")
+    const reminder = buildLanguageReminder()
+    expect(reminder).toContain("explanatory prose in Korean")
+    expect(reminder).toContain("preserve standard English technical terms")
   })
 })

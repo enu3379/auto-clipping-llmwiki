@@ -21,6 +21,7 @@ export const OUTPUT_LANGUAGE_OPTIONS = [
   { value: "Traditional Chinese", label: "繁體中文 (Traditional Chinese)" },
   { value: "Japanese", label: "日本語 (Japanese)" },
   { value: "Korean", label: "한국어 (Korean)" },
+  { value: "KoreanTechnicalEnglish", label: "한국어 + English technical terms" },
   { value: "Vietnamese", label: "Tiếng Việt (Vietnamese)" },
   { value: "French", label: "Français (French)" },
   { value: "German", label: "Deutsch (German)" },
