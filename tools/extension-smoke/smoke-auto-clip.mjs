@@ -160,8 +160,9 @@ async function main() {
         defaultProjectPath: projectPath,
         autoClipEnabled: true,
         autoClipOrigins: [origin],
+        sessionTag: "smoke-test",
         minContentLength: 50,
-        autoClipDelayMs: 250,
+        whitelistDwellMs: 250,
         autoClipHistory: {},
       });
     }, { origin: testServer.origin, projectPath });
@@ -175,6 +176,8 @@ async function main() {
     const content = await fs.readFile(clipFile, "utf8");
     assert(content.includes("LLM Wiki Auto Clip Smoke Article"), "Clip file did not contain article title");
     assert(content.includes("origin: web-clip"), "Clip file did not include web-clip frontmatter");
+    assert(content.includes('clip_trigger: "whitelist"'), "Clip file did not include clip trigger metadata");
+    assert(content.includes('tags: ["smoke-test"]'), "Clip file did not include session tag metadata");
 
     console.log(JSON.stringify({
       ok: true,

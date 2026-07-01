@@ -2,14 +2,38 @@
   const API_URLS = ["http://127.0.0.1:19827", "http://localhost:19827"];
   const AUTO_HISTORY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   const MAX_HISTORY_ENTRIES = 500;
+  const TRACKING_PARAMS = new Set([
+    "fbclid",
+    "gclid",
+    "mc_cid",
+    "mc_eid",
+    "msclkid",
+    "igshid",
+  ]);
 
   const DEFAULT_SETTINGS = {
     apiUrl: API_URLS[0],
     defaultProjectPath: "",
     autoClipEnabled: false,
     autoClipOrigins: [],
-    minContentLength: 200,
+    whitelist: [],
+    blacklist: [],
+    sessionTag: "",
+    sessionStartedAt: null,
+    dwellMs: 30000,
+    whitelistDwellMs: 3000,
+    aiSourceDwellMs: 10000,
+    minContentLength: 400,
     autoClipDelayMs: 1500,
+    aiOriginDomains: [
+      "chatgpt.com",
+      "chat.openai.com",
+      "claude.ai",
+      "gemini.google.com",
+      "perplexity.ai",
+    ],
+    aiSourceMode: "recommend",
+    reclipTtlDays: 0,
   };
 
   function canUseStorage() {
@@ -23,6 +47,11 @@
       ...DEFAULT_SETTINGS,
       ...stored,
       autoClipOrigins: Array.isArray(stored.autoClipOrigins) ? stored.autoClipOrigins : [],
+      whitelist: Array.isArray(stored.whitelist) ? stored.whitelist : [],
+      blacklist: Array.isArray(stored.blacklist) ? stored.blacklist : [],
+      aiOriginDomains: Array.isArray(stored.aiOriginDomains)
+        ? stored.aiOriginDomains
+        : DEFAULT_SETTINGS.aiOriginDomains,
     };
   }
 
@@ -107,6 +136,86 @@
     } catch {
       return "";
     }
+  }
+
+  function normalizeUrl(url) {
+    try {
+      const parsed = new URL(url);
+      parsed.hash = "";
+      parsed.hostname = parsed.hostname.toLowerCase();
+
+      for (const key of Array.from(parsed.searchParams.keys())) {
+        const lowerKey = key.toLowerCase();
+        if (lowerKey.startsWith("utm_") || TRACKING_PARAMS.has(lowerKey)) {
+          parsed.searchParams.delete(key);
+        }
+      }
+
+      if (parsed.pathname.length > 1) {
+        parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+      }
+
+      return parsed.toString();
+    } catch {
+      return url || "";
+    }
+  }
+
+  function wildcardToRegExp(pattern) {
+    const escaped = pattern
+      .replace(/[|\\{}()[\]^$+?.]/g, "\\$&")
+      .replace(/\*/g, ".*");
+    return new RegExp(`^${escaped}$`, "i");
+  }
+
+  function matchesHostPattern(host, pattern) {
+    const normalizedHost = String(host || "").toLowerCase();
+    const normalizedPattern = String(pattern || "").toLowerCase();
+    if (!normalizedPattern) return false;
+
+    if (normalizedPattern.includes("*")) {
+      if (normalizedPattern.startsWith("*.")) {
+        const baseHost = normalizedPattern.slice(2);
+        if (normalizedHost === baseHost) return true;
+      }
+      return wildcardToRegExp(normalizedPattern).test(normalizedHost);
+    }
+
+    return normalizedHost === normalizedPattern
+      || normalizedHost.endsWith(`.${normalizedPattern}`);
+  }
+
+  function matchesUrlPattern(url, pattern) {
+    const rawPattern = String(pattern || "").trim();
+    if (!rawPattern) return false;
+
+    try {
+      const parsed = new URL(url);
+      const normalizedUrl = normalizeUrl(url);
+
+      if (rawPattern.includes("://")) {
+        return wildcardToRegExp(rawPattern).test(normalizedUrl);
+      }
+
+      const slashIndex = rawPattern.indexOf("/");
+      const hostPattern = slashIndex >= 0 ? rawPattern.slice(0, slashIndex) : rawPattern;
+      const pathPattern = slashIndex >= 0 ? rawPattern.slice(slashIndex) : "";
+
+      if (!matchesHostPattern(parsed.hostname, hostPattern)) return false;
+      if (!pathPattern) return true;
+      return wildcardToRegExp(pathPattern).test(parsed.pathname);
+    } catch {
+      return false;
+    }
+  }
+
+  function matchesAnyPattern(url, patterns = []) {
+    return Array.isArray(patterns)
+      && patterns.some((pattern) => matchesUrlPattern(url, pattern));
+  }
+
+  function isBlacklistedUrl(url, settings) {
+    return matchesAnyPattern(url, settings?.blacklist || []);
   }
 
   function originToPermissionPattern(origin) {
@@ -256,10 +365,22 @@
       : {};
   }
 
-  async function wasAutoClippedRecently(url) {
+  function getHistoryTimestamp(entry) {
+    if (typeof entry === "number") return entry;
+    if (entry && typeof entry.ts === "number") return entry.ts;
+    return 0;
+  }
+
+  async function wasAutoClippedRecently(url, settings) {
     const history = await getAutoHistory();
-    const clippedAt = history[url];
-    return typeof clippedAt === "number" && Date.now() - clippedAt < AUTO_HISTORY_TTL_MS;
+    const clippedAt = getHistoryTimestamp(history[normalizeUrl(url)]);
+    if (!clippedAt) return false;
+
+    const ttlDays = Number(settings?.reclipTtlDays ?? DEFAULT_SETTINGS.reclipTtlDays);
+    if (ttlDays === 0) return true;
+
+    const ttlMs = ttlDays > 0 ? ttlDays * 24 * 60 * 60 * 1000 : AUTO_HISTORY_TTL_MS;
+    return Date.now() - clippedAt < ttlMs;
   }
 
   async function markAutoClipped(url) {
@@ -267,12 +388,49 @@
     const now = Date.now();
     const history = await getAutoHistory();
     const freshEntries = Object.entries(history)
-      .filter(([, clippedAt]) => typeof clippedAt === "number" && now - clippedAt < AUTO_HISTORY_TTL_MS)
-      .sort((a, b) => b[1] - a[1])
+      .filter(([, entry]) => {
+        const clippedAt = getHistoryTimestamp(entry);
+        return clippedAt && now - clippedAt < AUTO_HISTORY_TTL_MS;
+      })
+      .sort((a, b) => getHistoryTimestamp(b[1]) - getHistoryTimestamp(a[1]))
       .slice(0, MAX_HISTORY_ENTRIES - 1);
     const nextHistory = Object.fromEntries(freshEntries);
-    nextHistory[url] = now;
+    nextHistory[normalizeUrl(url)] = { ts: now };
     await chrome.storage.local.set({ autoClipHistory: nextHistory });
+  }
+
+  function parseSessionTags(sessionTag) {
+    return String(sessionTag || "")
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+  }
+
+  function toYamlString(value) {
+    return JSON.stringify(String(value || ""));
+  }
+
+  function withClipMetadata(content, settings = {}, meta = {}) {
+    const tags = parseSessionTags(settings.sessionTag);
+    const lines = [];
+
+    if (tags.length > 0) {
+      lines.push(`tags: [${tags.map(toYamlString).join(", ")}]`);
+    }
+    if (meta.source) lines.push(`clip_trigger: ${toYamlString(meta.source)}`);
+    if (meta.provenance?.type) lines.push(`clip_provenance: ${toYamlString(meta.provenance.type)}`);
+    if (meta.provenance?.sourceUrl) lines.push(`clip_source_url: ${toYamlString(meta.provenance.sourceUrl)}`);
+
+    if (lines.length === 0) return content;
+
+    return [
+      "---",
+      ...lines,
+      `clipped_at: ${toYamlString(new Date().toISOString())}`,
+      "---",
+      "",
+      content,
+    ].join("\n");
   }
 
   async function clipTab(tab, options = {}) {
@@ -286,10 +444,15 @@
       throw new Error("Extracted content is too short");
     }
 
+    const content = withClipMetadata(extracted.content, settings, {
+      source: options.source,
+      provenance: options.provenance,
+    });
+
     const result = await sendClip({
       title: extracted.title,
-      url: extracted.url,
-      content: extracted.content,
+      url: normalizeUrl(extracted.url),
+      content,
       projectPath,
     }, settings);
 
@@ -315,12 +478,17 @@
     resolveProjectPath,
     isClippableUrl,
     getOrigin,
+    normalizeUrl,
+    matchesUrlPattern,
+    matchesAnyPattern,
+    isBlacklistedUrl,
     hasOriginPermission,
     requestOriginPermission,
     extractContentFromTab,
     sendClip,
     wasAutoClippedRecently,
     markAutoClipped,
+    withClipMetadata,
     clipTab,
   };
 })();

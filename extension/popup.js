@@ -6,6 +6,7 @@ const clipBtn = document.getElementById("clipBtn");
 const projectSelect = document.getElementById("projectSelect");
 const autoClipSite = document.getElementById("autoClipSite");
 const autoClipHint = document.getElementById("autoClipHint");
+const sessionTagInput = document.getElementById("sessionTagInput");
 
 const clipper = globalThis.LlmWikiClipper;
 
@@ -126,11 +127,20 @@ async function sendClip() {
 
   try {
     settings = await clipper.getSettings();
-    await clipper.saveSettings({ defaultProjectPath: projectPath });
+    const sessionTag = sessionTagInput.value.trim();
+    settings = { ...settings, sessionTag };
+    await clipper.saveSettings({
+      defaultProjectPath: projectPath,
+      sessionTag,
+      sessionStartedAt: sessionTag ? settings.sessionStartedAt || Date.now() : null,
+    });
+    const clipContent = clipper.withClipMetadata(extractedPage.content, settings, {
+      source: "popup",
+    });
     const data = await clipper.sendClip({
       title: titleInput.value.trim() || extractedPage.title,
-      url: pageUrl,
-      content: extractedPage.content,
+      url: clipper.normalizeUrl(pageUrl),
+      content: clipContent,
       projectPath,
     }, settings);
 
@@ -223,6 +233,13 @@ function resizePreview() {
 
 clipBtn.addEventListener("click", sendClip);
 autoClipSite.addEventListener("change", toggleAutoClipForSite);
+sessionTagInput.addEventListener("change", async () => {
+  await clipper.saveSettings({
+    sessionTag: sessionTagInput.value.trim(),
+    sessionStartedAt: sessionTagInput.value.trim() ? Date.now() : null,
+  });
+  settings = await clipper.getSettings();
+});
 projectSelect.addEventListener("change", async () => {
   const projectPath = selectedProjectPath();
   if (projectPath) await clipper.saveSettings({ defaultProjectPath: projectPath });
@@ -231,6 +248,7 @@ projectSelect.addEventListener("change", async () => {
 
 (async () => {
   settings = await clipper.getSettings();
+  sessionTagInput.value = settings.sessionTag || "";
   await loadConnectionState();
   await extractContent();
   setTimeout(resizePreview, 100);
