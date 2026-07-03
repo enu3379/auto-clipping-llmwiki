@@ -130,7 +130,9 @@ function getDwellMs(settings, trigger) {
       || LlmWikiClipper.DEFAULT_SETTINGS.whitelistDwellMs;
   }
   if (trigger === "ai-source") {
-    return Number(settings.aiSourceDwellMs) || LlmWikiClipper.DEFAULT_SETTINGS.aiSourceDwellMs;
+    return Number(settings.dwellMs)
+      || Number(settings.aiSourceDwellMs)
+      || LlmWikiClipper.DEFAULT_SETTINGS.dwellMs;
   }
   return Number(settings.dwellMs) || LlmWikiClipper.DEFAULT_SETTINGS.dwellMs;
 }
@@ -201,6 +203,7 @@ async function maybeAutoClip(tabId, tab) {
   const autoTrigger = aiCandidate && settings.aiSourceMode === "auto"
     ? "ai-source"
     : trigger;
+  if (autoTrigger !== "ai-source" && autoTrigger !== "whitelist") return;
 
   if (!await hasClipPermission(tab.url)) {
     if (aiCandidate) showAiRecommendation(tabId);

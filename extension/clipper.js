@@ -22,7 +22,7 @@
     sessionStartedAt: null,
     dwellMs: 30000,
     whitelistDwellMs: 3000,
-    aiSourceDwellMs: 10000,
+    aiSourceDwellMs: 30000,
     minContentLength: 400,
     autoClipDelayMs: 1500,
     aiOriginDomains: [

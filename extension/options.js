@@ -4,7 +4,6 @@ const whitelistDwellInput = document.getElementById("whitelistDwellInput");
 const dwellInput = document.getElementById("dwellInput");
 const minContentInput = document.getElementById("minContentInput");
 const aiModeInput = document.getElementById("aiModeInput");
-const aiDwellInput = document.getElementById("aiDwellInput");
 const aiOriginsInput = document.getElementById("aiOriginsInput");
 const saveBtn = document.getElementById("saveBtn");
 const reloadBtn = document.getElementById("reloadBtn");
@@ -30,7 +29,6 @@ async function loadSettings() {
   dwellInput.value = String(settings.dwellMs);
   minContentInput.value = String(settings.minContentLength);
   aiModeInput.value = settings.aiSourceMode || "recommend";
-  aiDwellInput.value = String(settings.aiSourceDwellMs);
   aiOriginsInput.value = clipper.formatPatternList(settings.aiOriginDomains);
   setStatus("", "");
 }
@@ -45,6 +43,8 @@ async function saveSettings() {
     const blacklist = clipper.parsePatternList(blacklistInput.value);
     const aiOriginDomains = clipper.parsePatternList(aiOriginsInput.value);
     const aiSourceMode = aiModeInput.value || "recommend";
+    const aiClickDwellMs = numberValue(dwellInput, current.dwellMs || current.aiSourceDwellMs);
+    const autoClipOrigins = Array.isArray(current.autoClipOrigins) ? current.autoClipOrigins : [];
 
     const permissionResult = await clipper.requestPatternPermissions(whitelist);
     if (!permissionResult.granted && permissionResult.origins.length > 0) {
@@ -59,12 +59,12 @@ async function saveSettings() {
       whitelist,
       blacklist,
       whitelistDwellMs: numberValue(whitelistDwellInput, current.whitelistDwellMs),
-      dwellMs: numberValue(dwellInput, current.dwellMs),
+      dwellMs: aiClickDwellMs,
       minContentLength: numberValue(minContentInput, current.minContentLength),
       aiOriginDomains,
       aiSourceMode,
-      aiSourceDwellMs: numberValue(aiDwellInput, current.aiSourceDwellMs),
-      autoClipEnabled: current.autoClipEnabled || whitelist.length > 0 || aiSourceMode === "auto",
+      aiSourceDwellMs: aiClickDwellMs,
+      autoClipEnabled: autoClipOrigins.length > 0 || whitelist.length > 0 || aiSourceMode === "auto",
     });
 
     const unsupported = permissionResult.unsupported || [];
