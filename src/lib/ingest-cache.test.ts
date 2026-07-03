@@ -28,6 +28,12 @@ describe("ingest-cache — checkIngestCache", () => {
     expect(result).toBeNull()
   })
 
+  it("treats malformed cache objects as empty", async () => {
+    mockReadFile.mockResolvedValue(JSON.stringify({}))
+    const result = await checkIngestCache("/project", "foo.pdf", "content")
+    expect(result).toBeNull()
+  })
+
   it("returns cached filesWritten when hash matches AND all files exist", async () => {
     // Pre-seed cache with a hash matching "hello".
     // We compute the expected hash by running saveIngestCache first in
